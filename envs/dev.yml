@@ -1,0 +1,23 @@
+name: rl
+channels:
+  - conda-forge
+dependencies:
+  - python=3.7
+  - scikit-learn
+  - scipy
+  - matplotlib
+  - numpy<1.17
+  - anaconda::tensorflow-gpu=1.14
+  - pytorch::pytorch=1.2
+  - cudatoolkit=10.0
+  - jupyter
+  - pandas
+  - tqdm
+  - pylint
+  - pip
+  - pip:
+    - gym[all]
+    - gast==0.2.2
+    - stable-baselines[mpi]==2.9
+    - skorch==0.7.0
+    - tensorboardx==2.0
