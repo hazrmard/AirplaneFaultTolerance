@@ -13,12 +13,13 @@ dependencies:
   - jupyter
   - pandas
   - tqdm
+  - swig=4.0
   - pylint
   - pip
   - pip:
     - https://git.isis.vanderbilt.edu/ahmedi/pyTorchBridge/-/archive/master/pyTorchBridge-master.tar.gz
     - https://git.isis.vanderbilt.edu/ahmedi/pyStateSpace/-/archive/master/pyStateSpace-master.tar.gz
-    - gym[all]
+    - gym[box2d]
     - gast==0.2.2
     - stable-baselines[mpi]==2.9
     - skorch==0.7.0
