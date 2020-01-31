@@ -90,7 +90,35 @@ def cache_to_training_set(x_cache: List[np.ndarray], u_cache: List[np.ndarray], 
 
 
 
-def cache_to_episodic_rewards(r_cache: List[np.ndarray], d_cache:List[np.ndarray])\
+def cache_to_episodes(cache: List[np.ndarray], d_cache: List[np.ndarray])\
+    -> List[np.ndarray]:
+    """
+    Converts a cache of rewards to an array of total rewards per episode.
+
+    Parameters
+    ----------
+    cache : List[np.ndarray]
+        A list of arrays where each array element is a measurement per step.
+    d_cache : List[np.ndarray]
+        A list of arrays where each element is a boolean indicating whether that
+        step is the last in an episode.
+
+    Returns
+    -------
+    List[np.ndarray]
+        A list of arrays such that each array corresponds to an episode.
+    """
+    cache = np.concatenate(cache, axis=0)
+    d_cache = np.concatenate(d_cache, axis=0)
+    terminal_idx = np.nonzero(d_cache)[0]
+    episodic = [cache[:terminal_idx[0]]]
+    for i in range(1, len(terminal_idx) - 1):
+        episodic.append(cache[terminal_idx[i]: terminal_idx[i+1]])
+    return episodic
+
+
+
+def cache_to_episodic_rewards(r_cache: List[np.ndarray], d_cache: List[np.ndarray])\
     -> np.ndarray:
     """
     Converts a cache of rewards to an array of total rewards per episode.
@@ -108,13 +136,8 @@ def cache_to_episodic_rewards(r_cache: List[np.ndarray], d_cache:List[np.ndarray
     np.ndarray
         An array where each element is the total reward per episode.
     """
-    r_cache = np.concatenate(r_cache, axis=0)
-    d_cache = np.concatenate(d_cache, axis=0)
-    terminal_idx = np.nonzero(d_cache)[0]
-    episodic_r = [sum(r_cache[:terminal_idx[0]])]
-    for i in range(1, len(terminal_idx) - 1):
-        episodic_r.append(sum(r_cache[terminal_idx[i]: terminal_idx[i+1]]))
-    return np.asarray(episodic_r)
+    episodic = cache_to_episodes(r_cache, d_cache)
+    return np.asarray([sum(ep) for ep in episodic])
 
 
 

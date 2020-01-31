@@ -1,5 +1,4 @@
 *.ini
-dev.yml
 .ipynb_checkpoints
 __pycache__
 .vscode
