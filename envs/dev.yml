@@ -16,7 +16,7 @@ dependencies:
   - swig=4.0
   - pylint
   - requests
-  - chria::pyfmi=2.5
+  - chria::pyfmi
   - pip
   - pip:
     - gym[box2d]
