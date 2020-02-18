@@ -14,6 +14,8 @@ dependencies:
   - pandas
   - tqdm
   - swig=4.0
+  - requests
+  - chria::pyfmi=2.5
   - pylint
   - pip
   - pip:
