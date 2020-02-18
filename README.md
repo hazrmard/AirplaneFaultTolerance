@@ -17,15 +17,15 @@ This repository depends on [Anaconda](https://docs.conda.io/en/latest/miniconda.
 
 1. Install external dependencies:
 
-    a. Windows
+    * Windows
 
-        i. [Microsoft Visual Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2019) this is needed to compile the `Box2d-py` package needed for some OpenAI gym environments.
+        * [Microsoft Visual Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2019) this is needed to compile the `Box2d-py` package needed for some OpenAI gym environments.
 
-        ii. [Microsoft MPI](https://www.microsoft.com/en-us/download/details.aspx?id=57467) enables multi-processing and is used by some `stable-baselines` algorithms.
+        * [Microsoft MPI](https://www.microsoft.com/en-us/download/details.aspx?id=57467) enables multi-processing and is used by some `stable-baselines` algorithms.
 
-    b. Linux
+    * Linux
     
-        i. Prerequisites for stable-baselines library. Run: `sudo apt-get install cmake libopenmpi-dev python3-dev zlib1g-dev`
+        * Prerequisites for stable-baselines library. Run: `sudo apt-get install cmake libopenmpi-dev python3-dev zlib1g-dev`
 
 2. Install python dependencies
 
