@@ -1,9 +1,6 @@
 """
 Utility functions for data transformation.
 """
-
-
-
 from typing import List, Tuple, Any
 
 import gym
@@ -48,7 +45,7 @@ def cache_function(x_cache: list, u_cache: list, d_cache: list, r_cache: list):
 
 
 def cache_to_training_set(x_cache: List[np.ndarray], u_cache: List[np.ndarray], \
-    d_cache: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    d_cache: List[np.ndarray], mode: str='open') -> Tuple[np.ndarray, np.ndarray]:
     """
     Convert cached actions and states into (state, action, next state) tuples.
 
@@ -61,6 +58,10 @@ def cache_to_training_set(x_cache: List[np.ndarray], u_cache: List[np.ndarray], 
     d_cache : List[np.ndarray]
         List of arrays of booleans indicating whether each time step is end
         of episode.
+    mode: str
+        If "open", then values at indices where d_cache is True will be included
+        at the end of the previous episode. If "closed", those values will be
+        included at the start of the next episode.
 
     Returns
     -------
@@ -71,18 +72,21 @@ def cache_to_training_set(x_cache: List[np.ndarray], u_cache: List[np.ndarray], 
     x_cache = np.concatenate(x_cache, axis=0)
     u_cache = np.concatenate(u_cache, axis=0)
     d_cache = np.concatenate(d_cache, axis=0)
-
-    # Assuming episode ends at last instance in batch,
-    # makes it easy to split cached instances into
-    # x and x_next.
-    d_cache[-1] = True
     non_terminal_idx = np.nonzero(~d_cache)[0]
+    if mode == 'closed':
+        non_terminal_idx -= 1
+        non_terminal_idx = non_terminal_idx[non_terminal_idx-1>=0]
+    elif mode == 'open':
+        pass
+    else:
+        raise ValueError('Only "open" and "closed" mode supported.')
 
     # x is made of states except terminal or last state,
     # x_next is x delayed by 1 step
     x = x_cache[non_terminal_idx]
     u = u_cache[non_terminal_idx]
-    x_next = x_cache[non_terminal_idx + 1]
+    non_terminal_idx += 1
+    x_next = x_cache[non_terminal_idx[non_terminal_idx < len(x_cache)]
 
     xu = np.concatenate((x, u), axis=1)
 
@@ -90,8 +94,8 @@ def cache_to_training_set(x_cache: List[np.ndarray], u_cache: List[np.ndarray], 
 
 
 
-def cache_to_episodes(cache: List[np.ndarray], d_cache: List[np.ndarray])\
-    -> List[np.ndarray]:
+def cache_to_episodes(cache: List[np.ndarray], d_cache: List[np.ndarray],
+    mode: str='closed') -> List[np.ndarray]:
     """
     Converts a cache of rewards to an array of total rewards per episode.
 
@@ -102,6 +106,10 @@ def cache_to_episodes(cache: List[np.ndarray], d_cache: List[np.ndarray])\
     d_cache : List[np.ndarray]
         A list of arrays where each element is a boolean indicating whether that
         step is the last in an episode.
+    mode: str
+        If "open", then values at indices where d_cache is True will be included
+        at the end of the previous episode. If "closed", those values will be
+        included at the start of the next episode.
 
     Returns
     -------
@@ -111,8 +119,15 @@ def cache_to_episodes(cache: List[np.ndarray], d_cache: List[np.ndarray])\
     cache = np.concatenate(cache, axis=0)
     d_cache = np.concatenate(d_cache, axis=0)
     terminal_idx = np.nonzero(d_cache)[0]
+    if mode == 'open':                         # Include values at indices where
+        terminal_idx[terminal_idx != 0] += 1   # d_cache==True in previous episode
+    elif mode == 'closed':
+        if terminal_idx[-1] != len(cache) - 1:      # Include last element even
+            terminal_idx[-1] += 1                   # if d_cache=False
+    else:
+        raise ValueError('Only "open" and "closed" mode supported.')
     episodic = [cache[:terminal_idx[0]]]
-    for i in range(1, len(terminal_idx) - 1):
+    for i in range(0, len(terminal_idx) - 1):
         episodic.append(cache[terminal_idx[i]: terminal_idx[i+1]])
     return episodic
 
