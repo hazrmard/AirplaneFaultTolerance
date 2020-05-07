@@ -1,4 +1,4 @@
-name: rl
+name: ifac2020
 channels:
   - conda-forge
 dependencies:
@@ -9,15 +9,14 @@ dependencies:
   - numpy<1.17
   - anaconda::tensorflow=1.14
   - pytorch::pytorch=1.2
-  - pytorch::cudatoolkit=10.0
+  - cudatoolkit=10.0
   - jupyter
   - pandas
   - tqdm
   - pylint
   - pip
   - pip:
-    - https://git.isis.vanderbilt.edu/ahmedi/pyTorchBridge/-/archive/master/pyTorchBridge-master.tar.gz
-    - https://git.isis.vanderbilt.edu/ahmedi/pyStateSpace/-/archive/master/pyStateSpace-master.tar.gz
+    - https://git.isis.vanderbilt.edu/ahmedi/pystatespace/-/archive/v0.1.0/pystatespace-v0.1.0.tar.gz
     - gym
     - gast==0.2.2
-    - stable-baselines[mpi]==2.8
+    - stable-baselines[mpi]==2.9
