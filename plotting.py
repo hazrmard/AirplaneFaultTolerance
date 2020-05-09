@@ -43,7 +43,7 @@ def plot_tanks(env, agent=None, plot='both'):
         for i in range(len(u_open)):
             x_open[i] = env.step(u_open[i])[0]
 
-    plt.figure(figsize=(12, 12))
+    # plt.figure(figsize=(12, 12))
     patches = None
     for i in range(n_tanks):
         plt.subplot(n_tanks // 2, 2, i+1)

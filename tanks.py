@@ -196,7 +196,7 @@ class TanksPhysicalEnv(gym.Env):
         self.solver = Trapezoid(dims=self.n, outputs=self.n, dx=tanks.dxdt,
                                 out=tanks.y, tstep=tstep)
         self.action_space = gym.spaces.MultiBinary(self.n)
-        self.observation_space = gym.spaces.Box(0, np.inf, (self.n,))
+        self.observation_space = gym.spaces.Box(0, np.inf, (self.n,), dtype=np.float32)
 
         median = len(tanks.heights) // 2
         self.left_idx = slice(None, median)
