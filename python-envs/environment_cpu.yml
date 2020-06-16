@@ -8,14 +8,13 @@ dependencies:
   - matplotlib
   - numpy<1.17
   - anaconda::tensorflow=1.14
-  - cudatoolkit=10.0
+  - pytorch::cpuonly
   - pytorch::pytorch=1.2
-  - jupyter
   - pandas
   - tqdm
-  - swig=4.0
-  - requests
-  - chria::pyfmi
+  - swig
+  # Developement tools
+  - jupyter
   - pylint
   - pip
   - pip:
@@ -23,6 +22,5 @@ dependencies:
     - https://git.isis.vanderbilt.edu/ahmedi/pyStateSpace/-/archive/master/pyStateSpace-master.tar.gz
     - gym[box2d]
     - gast==0.2.2
-    - stable-baselines[mpi]==2.9
-    - skorch==0.7.0
+    - stable-baselines[mpi]==2.10
     - tensorboardx==2.0

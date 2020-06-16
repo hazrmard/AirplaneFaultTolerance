@@ -7,20 +7,20 @@ dependencies:
   - scipy
   - matplotlib
   - numpy<1.17
-  - anaconda::tensorflow=1.14
-  - pytorch::cpuonly
+  - anaconda::tensorflow-gpu=1.14
   - pytorch::pytorch=1.2
-  - jupyter
+  - cudatoolkit=10.0
   - pandas
   - tqdm
-  - swig=4.0
-  - requests
-  - chria::pyfmi
+  - swig
+  # Developement tools
+  - jupyter
   - pylint
+  - jupyter_nbextensions_configurator
   - pip
   - pip:
     - gym[box2d]
     - gast==0.2.2
-    - stable-baselines[mpi]==2.9
-    - skorch==0.7.0
+    - stable-baselines[mpi]==2.10
     - tensorboardx==2.0
+    - joblib==0.14.1

@@ -1,15 +1,15 @@
 """
 Defines the model for a fuel tank system for an airplane.
 """
-
-
 from typing import Tuple
 
 import numpy as np
 from sklearn.base import BaseEstimator
 import gym
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
-from pystatespace import Trapezoid, SS_ODE
+from pystatespace import Trapezoid      # pylint: disable=import-error
 
 
 
@@ -186,6 +186,9 @@ class TanksPhysicalEnv(gym.Env):
         A class instance with a predict(time, state, action) method that returns
         the a tuple of next state and output vectors as 2D arrays.
     """
+    
+    params = ('rho', 'g', 'heights', 'cross_section', 'valves_min', 'valves_max',
+               'resistances', 'pumps', 'engines')
 
 
     def __init__(self, tanks: TanksFactory, tstep: float=1e-1):
@@ -199,14 +202,26 @@ class TanksPhysicalEnv(gym.Env):
         self.observation_space = gym.spaces.Box(0, np.inf, (self.n,))
 
         median = len(tanks.heights) // 2
+        self.odd = len(tanks.heights) % 2 != 0
+        self.median_idx = median
         self.left_idx = slice(None, median)
         self.right_idx = slice(median + (len(tanks.heights) % 2), None)
         self.left_arm = np.arange(median, 0, -1)
         self.right_arm = np.arange(1, median + 1)
         self.max_arm = abs(max(self.right_arm))
+        median = len(tanks.engines) // 2
+        self.odd_e = len(tanks.engines) % 2 != 0
+        self.median_e_idx = median
+        self.left_e_idx = slice(None, median)
+        self.right_e_idx = slice(median + (len(tanks.engines) % 2), None)
+
+        episode_duration = sum(tanks.heights * tanks.cross_section) \
+                       / min(sum(tanks.pumps), sum(tanks.engines))
+        self.episode_length = int(episode_duration / tstep)
 
         self.x = None
         self.t = None
+        self.og_params = {p: getattr(self.tanks, p) for p in TanksPhysicalEnv.params}
         self.reset()
 
 
@@ -240,7 +255,15 @@ class TanksPhysicalEnv(gym.Env):
         """
         self.t += self.tstep
         x_next = self.solver.predict(self.tstep, self.x, action)[0][-1]
-        done = sum(x_next) < sum(self.tanks.engines)
+
+        median_demand = 0.5 * self.tanks.engines[self.median_e_idx] * self.odd_e
+        left_demand = sum(self.tanks.engines[self.left_e_idx]) + median_demand
+        right_demand = sum(self.tanks.engines[self.right_e_idx]) + median_demand
+        median_supply = 0.5 * x_next[self.median_idx] * self.odd
+        left_supply = sum(x_next[self.left_idx] + median_supply)
+        right_supply = sum(x_next[self.right_idx] + median_supply)
+        done = (left_demand > left_supply) or (right_demand > right_supply) 
+        
         reward = self.reward(self.t, self.x, action, x_next, done)
         self.x = x_next
         return self.x, reward, done, {}
@@ -320,6 +343,25 @@ class TanksPhysicalEnv(gym.Env):
         return (1 - abs(centre) / self.max_arm) * spread - activity
 
 
+    def set_parameters(self, **params):
+        """
+        Set parameters for the tanks system. For unspecified parameters, they
+        are reset to defaults (`self.og_params`).
+
+        Parameters
+        ----------
+        **params
+            Keyword arguments where keywords can be one of TanksPhysicalEnv.params.
+        """
+        for p in self.params:
+            val = params.get(p, self.og_params.get(p))
+            if isinstance(val, np.ndarray):
+                val = np.copy(val)
+            elif val is None:
+                continue
+            setattr(self.tanks, p, val)
+
+
 
 class TanksDataEnv(TanksPhysicalEnv):
     """
@@ -355,7 +397,15 @@ class TanksDataEnv(TanksPhysicalEnv):
         self.t += 1
         solver_input = np.concatenate((self.x, action)).reshape(1, -1)
         x_next = self.solver.predict(solver_input)[0]
-        done = sum(x_next) < sum(self.tanks.engines)
+
+        median_demand = 0.5 * self.tanks.engines[self.median_e_idx] * self.odd_e
+        left_demand = sum(self.tanks.engines[self.left_e_idx]) + median_demand
+        right_demand = sum(self.tanks.engines[self.right_e_idx]) + median_demand
+        median_supply = 0.5 * x_next[self.median_idx] * self.odd
+        left_supply = sum(x_next[self.left_idx] + median_supply)
+        right_supply = sum(x_next[self.right_idx] + median_supply)
+        done = (left_demand > left_supply) or (right_demand > right_supply)
+
         reward = self.reward(self.t, self.x, action, x_next, done)
         self.x = x_next
         return self.x, reward, done, {}
@@ -377,6 +427,7 @@ class TanksDataRecurrentEnv(TanksDataEnv):
 
     def step(self, action):
         self.t += 1
+        # pylint: disable=too-many-function-args
         solver_input = np.concatenate((self.x, action)).reshape(1, 1, -1)
         x_next, self.h0c0 = self.solver.predict(solver_input, self.h0c0)
         x_next = np.squeeze(x_next)
@@ -384,3 +435,63 @@ class TanksDataRecurrentEnv(TanksDataEnv):
         reward = self.reward(self.t, self.x, action, x_next, done)
         self.x = x_next
         return self.x, reward, done, {}
+
+
+
+def plot_tanks(env, agent=None, plot='both'):
+    n_tanks = len(env.tanks.heights)
+    if agent is not None:
+        x, u, done = [], [], False
+        x.append(env.reset())
+        while not done:
+            u_, _ = agent.predict(x[-1])
+            x_, _, done, _ = env.step(u_)
+            x.append(x_)
+            u.append(u_)
+        x, u = np.asarray(x), np.asarray(u)
+        opened = u == 1
+        episode_length = len(x)
+        episode_duration = episode_length * env.tstep
+    else:
+        episode_duration = sum(env.tanks.heights * env.tanks.cross_section)\
+                           / min(sum(env.tanks.pumps), sum(env.tanks.engines))
+        episode_length = int(episode_duration / env.tstep)
+
+
+    if plot in ('closed', 'both'):
+        u_closed = np.zeros((episode_length, n_tanks))
+        x_closed = np.zeros_like(u_closed)
+        env.reset()
+        for i in range(len(u_closed)):
+            x_closed[i] = env.step(u_closed[i])[0]
+    if plot in ('open', 'both'):
+        u_open = np.ones((episode_length, n_tanks))
+        x_open = np.zeros_like(u_open)
+        env.reset()
+        for i in range(len(u_open)):
+            x_open[i] = env.step(u_open[i])[0]
+
+    plt.figure(figsize=(12, 12))
+    patches = None
+    for i in range(n_tanks):
+        plt.subplot(n_tanks // 2, 2, i+1)
+        plt.ylim(0, 1.05 * max(env.tanks.heights))
+        if plot in ('open', 'both'):
+            plt.plot(x_open[:, i], '--', label='Open' if i==n_tanks-1 else None)
+        if plot in ('closed', 'both'):
+            plt.plot(x_closed[:, i], ':', label='Closed' if i==n_tanks-1 else None)
+        if agent is not None:
+            cmap = plt.cm.gray      # pylint: disable=no-member
+            im = plt.imshow(opened[:, i].reshape(1, -1), aspect='auto', alpha=0.3,
+                            extent=(*plt.xlim(), *plt.ylim()), origin='lower',
+                            vmin=0, vmax=1, cmap=cmap)
+            if len(np.unique(opened) == 2):
+                colors = [ im.cmap(im.norm(value)) for value in (0, 1)]
+                patches = [mpatches.Patch(color=colors[0], label="Closed", alpha=0.3),
+                           mpatches.Patch(color=colors[1], label="Opened", alpha=0.3),]
+            plt.plot(x[:, i], '-', label='RL' if i==n_tanks-1 else None)
+        plt.ylabel('Tank ' + str(i + 1))
+        if i >= 4: plt.xlabel('Time /s')
+        if (i == n_tanks-2) and patches is not None: plt.legend(handles=patches)
+        if i==n_tanks-1: plt.legend()
+        plt.grid(True)

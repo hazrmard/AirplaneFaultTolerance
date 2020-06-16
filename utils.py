@@ -1,10 +1,16 @@
 """
-Utility functions for data transformation.
+Utility functions for data transformation and computations.
 """
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Union, Dict
+from collections import OrderedDict
+import multiprocessing as mp
+from copy import deepcopy
 
 import gym
 import numpy as np
+from sklearn.neural_network import MLPRegressor
+import torch
+from pytorchbridge import TorchEstimator
 
 
 
@@ -45,7 +51,7 @@ def cache_function(x_cache: list, u_cache: list, d_cache: list, r_cache: list):
 
 
 def cache_to_training_set(x_cache: List[np.ndarray], u_cache: List[np.ndarray], \
-    d_cache: List[np.ndarray], mode: str='open') -> Tuple[np.ndarray, np.ndarray]:
+    d_cache: List[np.ndarray], mode: str='closed') -> Tuple[np.ndarray, np.ndarray]:
     """
     Convert cached actions and states into (state, action, next state) tuples.
 
@@ -69,28 +75,18 @@ def cache_to_training_set(x_cache: List[np.ndarray], u_cache: List[np.ndarray], 
         An array of concatenated (state, action) tuples and an array of next state
         measurements.
     """
-    x_cache = np.concatenate(x_cache, axis=0)
-    u_cache = np.concatenate(u_cache, axis=0)
-    d_cache = np.concatenate(d_cache, axis=0)
-    non_terminal_idx = np.nonzero(~d_cache)[0]
-    if mode == 'closed':
-        non_terminal_idx -= 1
-        non_terminal_idx = non_terminal_idx[non_terminal_idx-1>=0]
-    elif mode == 'open':
-        pass
-    else:
-        raise ValueError('Only "open" and "closed" mode supported.')
+    x_ep = cache_to_episodes(x_cache, d_cache, mode)
+    u_ep = cache_to_episodes(u_cache, d_cache, mode)
 
-    # x is made of states except terminal or last state,
-    # x_next is x delayed by 1 step
-    x = x_cache[non_terminal_idx]
-    u = u_cache[non_terminal_idx]
-    non_terminal_idx += 1
-    x_next = x_cache[non_terminal_idx[non_terminal_idx < len(x_cache)]
+    xu, x_next = [], []
+    for x, u in zip(x_ep, u_ep):
+        if len(x) < 1: continue
+        xu_ = np.concatenate((x[:-1], u[:-1]), axis=1)
+        x_next_ = x[1:]
+        xu.append(xu_)
+        x_next.append(x_next_)
 
-    xu = np.concatenate((x, u), axis=1)
-
-    return xu, x_next
+    return np.concatenate(xu, axis=0), np.concatenate(x_next, axis=0)
 
 
 
@@ -119,11 +115,12 @@ def cache_to_episodes(cache: List[np.ndarray], d_cache: List[np.ndarray],
     cache = np.concatenate(cache, axis=0)
     d_cache = np.concatenate(d_cache, axis=0)
     terminal_idx = np.nonzero(d_cache)[0]
+    if terminal_idx[-1] != len(cache) - 1:      # Include trailing end of cache
+        terminal_idx = np.hstack((terminal_idx, (len(cache) - 1,)))
     if mode == 'open':                         # Include values at indices where
         terminal_idx[terminal_idx != 0] += 1   # d_cache==True in previous episode
     elif mode == 'closed':
-        if terminal_idx[-1] != len(cache) - 1:      # Include last element even
-            terminal_idx[-1] += 1                   # if d_cache=False
+        pass
     else:
         raise ValueError('Only "open" and "closed" mode supported.')
     episodic = [cache[:terminal_idx[0]]]
@@ -180,3 +177,54 @@ def rewards_from_actions(env: gym.Env, u: List[Any]) -> float:
         rewards += r
         if done: env.reset()
     return rewards
+
+
+
+def copy_tensor(t: Union[torch.Tensor, Dict[str, torch.Tensor], List[torch.Tensor]]) \
+    -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+    """
+    Make a copy of a tensor or a state_dict such that it is detached from the
+    computation graph and does not share underlying data.
+
+    Parameters
+    ----------
+    t : Union[torch.Tensor, Dict[str, torch.Tensor], List[torch.Tensor]]
+        A tensor or a dictionary of [name, torch.Tensor]
+
+    Returns
+    -------
+    Union[torch.Tensor, Dict[str, torch.Tensor]]
+        Same object as t
+    """
+    if isinstance(t, OrderedDict):
+        return OrderedDict([(k, v.clone().detach()) for k, v in t.items()])
+    elif isinstance(t, torch.Tensor):
+        return t.clone().detach()
+    elif isinstance(t, (list, tuple)):
+        return [t_.clone().detach() for t_ in t]
+    else:
+        raise TypeError('Only OrderedDict or Tensor supported')
+
+
+
+def copy_mlp_regressor(est: MLPRegressor, **params) -> MLPRegressor:
+    if isinstance(est, MLPRegressor):
+        est_ = deepcopy(est)
+        est_.set_params(**params)
+    elif isinstance(est, TorchEstimator):
+        est_ = deepcopy(est)
+        est_.module.load_state_dict(copy_tensor(est.module.state_dict()))
+    return est_
+
+
+
+def sanitize_filename(fname: str) -> str:
+    fname = fname.replace(':', '')
+    fname = fname.replace("'", '')
+    fname = fname.replace(' ', '')
+    fname = fname.replace(',', '_')
+    fname = fname.replace('{', '')
+    fname = fname.replace('}', '')
+    fname = fname.replace('(', '')
+    fname = fname.replace(')', '')
+    return fname

@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "..\\pyStateSpace"
+		},
+		{
+			"path": "..\\pyTorchBridge"
+		}
+	],
+	"settings": {}
+}
