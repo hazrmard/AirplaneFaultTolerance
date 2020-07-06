@@ -56,6 +56,7 @@ def meta_update(starting_policy, env_, library, memory=None, n_inner=1, n_outer=
                         memory_.actions = memory.actions
                         memory_.rewards = memory.rewards
                         memory_.is_terminals = memory.is_terminals
+                        # pylint: disable=not-callable
                         states = torch.tensor(memory.states).float().to(DEVICE).detach()
                         actions = torch.tensor(memory.actions).float().to(DEVICE).detach()
                         memory_.logprobs = agent_inner.policy.evaluate(states, actions)[0]
@@ -69,7 +70,7 @@ def meta_update(starting_policy, env_, library, memory=None, n_inner=1, n_outer=
             # Accumulate gradients of library of policies, and update main policy
             for param_outer, param_inner in zip(agent_outer.policy.parameters(), agent_inner.policy.parameters()):
                 if param_outer.grad is None:
-                    param_outer.grad = torch.zeros_like(param_outer)
+                    param_outer.grad = torch.zeros_like(param_outer) # pylint: disable=no-member
                 param_outer.grad += param_inner.grad
 
         # Make parameter update after all policy gradients accumulated
@@ -101,7 +102,8 @@ def learn_env_model(memory, est, verbose=False):
         nd = memory.is_terminals[i+1]
         ns = memory.states[i+1]
         if nd: continue
-        x.append(np.concatenate((s, a)))
+        # action a can be a single number or an array
+        x.append(np.concatenate((s, np.asarray(a).reshape(-1))))
         y.append(ns)
     x, y = np.asarray(x), np.asarray(y)
     est_ = copy_mlp_regressor(est, warm_start=True)
@@ -112,8 +114,9 @@ def learn_env_model(memory, est, verbose=False):
 
 
 def kl_div(memory, policy0, policy1, **ppo_params):
-    policy = ActorCriticBinary(ppo_params['state_dim'], ppo_params['action_dim'],
-                               ppo_params['n_latent_var']).to(DEVICE)
+    Policy = ppo_params['policy'] # get the policy class
+    policy = Policy(ppo_params['state_dim'], ppo_params['action_dim'],
+                    ppo_params['n_latent_var']).to(DEVICE)
     s = torch.tensor(memory.states).float().to(DEVICE)
     a = torch.tensor(memory.actions).float().to(DEVICE)
 

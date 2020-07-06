@@ -6,10 +6,9 @@ dependencies:
   - scikit-learn
   - scipy
   - matplotlib
-  - numpy<1.17
-  - anaconda::tensorflow=1.14
+  - numpy
   - pytorch::cpuonly
-  - pytorch::pytorch=1.2
+  - pytorch::pytorch=1.5
   - pandas
   - tqdm
   - swig
@@ -20,7 +19,6 @@ dependencies:
   - pip
   - pip:
     - gym[box2d]
-    - gast==0.2.2
-    - stable-baselines[mpi]==2.10
-    - tensorboardx==2.0
-    - joblib==0.14.1
+    - stable-baselines3>=0.7.0
+    - tensorboard
+    - joblib

@@ -3,11 +3,12 @@ https://github.com/nikhilbarhate99/PPO-PyTorch/blob/master/PPO.py
 """
 import torch
 import torch.nn as nn
-from torch.distributions import Bernoulli
+from torch.distributions import Bernoulli, Categorical
 from torch.utils.tensorboard import SummaryWriter
 import gym
 from tqdm.auto import trange
 
+# pylint: disable=no-member
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Memory:
@@ -81,11 +82,63 @@ class ActorCriticBinary(nn.Module):
         return action_logprobs, torch.squeeze(state_value), dist_entropy
 
 
+
+class ActorCriticDiscrete(nn.Module):
+
+
+    def __init__(self, state_dim, action_dim, n_latent_var):
+        super().__init__()
+        self.action_dim = action_dim
+        self.state_dim = state_dim
+        self.n_latent_var = n_latent_var
+
+        self.action_layer = nn.Sequential(
+                nn.Linear(state_dim, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, action_dim),
+                nn.Softmax(dim=-1)
+                )
+        
+        self.value_layer = nn.Sequential(
+                nn.Linear(state_dim, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, 1)
+                )
+
+
+    def forward(self):
+        raise NotImplementedError
+
+
+    def predict(self, state):
+        # pylint: disable=no-member
+        state = torch.from_numpy(state).float().to(DEVICE)
+        action_probs = self.action_layer(state)  # Discrete
+        dist = Categorical(action_probs)
+        action = dist.sample()
+        return action.squeeze().cpu().item(), dist.log_prob(action).sum(-1).item()
+
+
+    def evaluate(self, state, action):
+        action_probs = self.action_layer(state)  # Discrete
+        dist = Categorical(action_probs)
+        
+        action_logprobs = dist.log_prob(action).sum(-1)
+        dist_entropy = dist.entropy().sum(-1) # TODO, sum entropy over variables
+        
+        state_value = self.value_layer(state)
+        
+        return action_logprobs, torch.squeeze(state_value), dist_entropy
+
         
 class PPO:
 
 
-    def __init__(self, env, state_dim, action_dim, n_latent_var=64, lr=0.02,
+    def __init__(self, env, policy, state_dim, action_dim, n_latent_var=64, lr=0.02,
                  betas=(0.9, 0.999), gamma=0.99, epochs=5, eps_clip=0.2,
                  update_interval=2000, summary: SummaryWriter=None):
         self.env = env
@@ -96,10 +149,8 @@ class PPO:
         self.epochs = epochs
         self.update_interval = update_interval
         
-        self.policy = ActorCriticBinary(state_dim, action_dim, n_latent_var).to(DEVICE)
+        self.policy = policy(state_dim, action_dim, n_latent_var).to(DEVICE)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr, betas=betas)
-        self.policy_old = ActorCriticBinary(state_dim, action_dim, n_latent_var).to(DEVICE)
-        self.policy_old.load_state_dict(self.policy.state_dict())
         
         self.MseLoss = nn.MSELoss()
 
@@ -117,6 +168,7 @@ class PPO:
             rewards.insert(0, discounted_reward)
 
         # Casting to correct data type and DEVICE
+        # pylint: disable=not-callable
         rewards = torch.tensor(rewards).float().to(DEVICE)
         old_states = torch.tensor(memory.states).float().to(DEVICE).detach()
         old_actions = torch.tensor(memory.actions).float().to(DEVICE).detach()
@@ -191,8 +243,6 @@ class PPO:
             
             # update if its time
             if t % update_interval == 0:
-                # Make a copy of current policy
-                self.policy_old.load_state_dict(self.policy.state_dict())
                 self.update(self.policy, memory, self.epochs, self.optimizer, self.summary)
                 memory.clear_memory()
         return episodic_rewards[:-1 if len(episodic_rewards) > 1 else None]
