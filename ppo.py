@@ -120,15 +120,15 @@ class ActorCriticDiscrete(nn.Module):
         action_probs = self.action_layer(state)  # Discrete
         dist = Categorical(action_probs)
         action = dist.sample()
-        return action.squeeze().cpu().item(), dist.log_prob(action).sum(-1).item()
+        return action.squeeze().cpu().item(), dist.log_prob(action).item()
 
 
     def evaluate(self, state, action):
         action_probs = self.action_layer(state)  # Discrete
         dist = Categorical(action_probs)
         
-        action_logprobs = dist.log_prob(action).sum(-1)
-        dist_entropy = dist.entropy().sum(-1) # TODO, sum entropy over variables
+        action_logprobs = dist.log_prob(action)
+        dist_entropy = dist.entropy() # TODO, sum entropy over variables
         
         state_value = self.value_layer(state)
         
