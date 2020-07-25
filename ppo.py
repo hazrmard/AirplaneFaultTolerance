@@ -75,7 +75,7 @@ class ActorCriticBinary(nn.Module):
         dist = Bernoulli(action_probs)
         
         action_logprobs = dist.log_prob(action).sum(-1)
-        dist_entropy = dist.entropy().sum(-1) # TODO, sum entropy over variables
+        dist_entropy = dist.entropy()
         
         state_value = self.value_layer(state)
         
