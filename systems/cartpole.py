@@ -12,25 +12,59 @@ import matplotlib.patches as mpatches
 
 class CartPoleEnv(OGCartPole):
 
-    params = ('gravity', 'masscart', 'masspole', 'length', 'force_mag', 'tau')
+    params = ('masscart', 'masspole', 'length', 'force_mag')
 
 
-    def __init__(self):
+    def __init__(self, seed=None):
         super().__init__()
         self.default_params = {p: getattr(self, p) for p in CartPoleEnv.params}
+        self._seed = seed
+        self.seed(seed)
 
 
-    def set_parameters(self, gravity: float=9.8, masscart: float=1.,
+    def set_parameters(self, masscart: float=1.,
                        masspole: float=0.1, length: float=0.5,
-                       force_mag: float=10, tau: float=0.2):
-        self.gravity = gravity
+                       force_mag: float=10):
         self.masscart = masscart
         self.masspole = masspole
         self.total_mass = self.masscart + self.masspole
         self.length = length
         self.polemass_length = self.masspole * self.length
         self.force_mag = force_mag
-        self.tau = tau
+
+
+    def set_state(self, state: np.ndarray):
+        self.state = state
+
+    # pylint: disable=no-member
+    def randomize(self):
+        return random_cartpole(self.np_random, env=self)
+
+
+
+# pylint: disable=no-member
+def random_cartpole(random: np.random.RandomState=None, env=None):
+    env = CartPoleEnv() if env is None else env
+    feature_size = len(CartPoleEnv.params)
+    feature_min = np.asarray([0.75, 0.075, 0.75, 7.5])
+    feature_max = np.asarray([1.25, 0.125, 1.25, 12.5])
+    feature_min_abs = np.asarray([0.1, 0.01, 0.1, 1.])
+
+    if isinstance(random, np.random.RandomState):
+        features = random.randn(feature_size)
+    elif isinstance(random, np.ndarray):
+        features = random
+    elif isinstance(random, (int, float)):
+        random = np.random.RandomState(random)
+        features = random.rand(feature_size)
+    
+    features = np.clip(features, feature_min, feature_max)
+    features = np.where(np.abs(features) < feature_min_abs,
+                        np.sign(features) * feature_min_abs,
+                        features)
+    params = {k:v for k, v in zip(env.params, features)}
+    env.set_parameters(**params)
+    return env
 
 
 

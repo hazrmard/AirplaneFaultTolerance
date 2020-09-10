@@ -70,9 +70,9 @@ class TanksFactory:
                  valves_max: np.ndarray=np.ones(6),
                  resistances: np.ndarray=np.ones(6) * 1e2,
                  pumps: np.ndarray=np.ones(6) * 0.1,
-                 engines: np.ndarray=np.ones(6) * 0.1):
-        n = n                     # Number of tanks
-        e = e                     # Number of engines
+                 engines: np.ndarray=np.ones(2) * 0.1):
+        self.n = n                     # Number of tanks
+        self.e = e                     # Number of engines
         self.rho = rho                 # Density of fluid
         self.g = g                  # Gravitational acceleration
         self.heights = np.copy(heights)      # height of tanks
@@ -143,6 +143,7 @@ class TanksFactory:
                 return dx
             # All tanks that are connected to conduit and that will act as sink
             sink_tanks_idx = np.arange(n)[(u > 0.) & (potential_effective < potential_conduit)]
+            # print(potential_conduit, potential_effective)
             # Velocity of fluid into sink tanks: change of potential / resistance
             flowrate_sink = (potential_conduit - potential_effective[sink_tanks_idx])  * u[sink_tanks_idx] / self.resistances[sink_tanks_idx]
             # Total flow into sink == total flow from source == flow through conduit
@@ -187,11 +188,11 @@ class TanksPhysicalEnv(gym.Env):
         the a tuple of next state and output vectors as 2D arrays.
     """
     
-    params = ('rho', 'g', 'heights', 'cross_section', 'valves_min', 'valves_max',
+    params = ('rho', 'heights', 'cross_section', 'valves_min', 'valves_max',
                'resistances', 'pumps', 'engines')
 
 
-    def __init__(self, tanks: TanksFactory, tstep: float=1e-1):
+    def __init__(self, tanks: TanksFactory, tstep: float=1e-1, seed=None):
         super().__init__()
         self.tanks = tanks
         self.tstep = tstep
@@ -221,8 +222,21 @@ class TanksPhysicalEnv(gym.Env):
 
         self.x = None
         self.t = None
+        self.np_random = None
         self.og_params = {p: getattr(self.tanks, p) for p in TanksPhysicalEnv.params}
+        self.seed(seed)
         self.reset()
+
+        
+    def randomize(self):
+        for param, value in self.og_params.items():
+            if param in ('heights, cross_section'):
+                factor = np.clip((1 + 0.2 * self.np_random.randn()), 0, None)
+                setattr(self.tanks, param, value * factor)
+
+
+    def seed(self, seed=None):
+        self.np_random = np.random.RandomState(seed)
 
 
     def reset(self) -> np.ndarray:
@@ -235,7 +249,8 @@ class TanksPhysicalEnv(gym.Env):
             The initial state vector.
         """
         self.t = 0.
-        self.x = np.copy(self.tanks.heights)
+        self.x = np.copy(self.tanks.heights) # * (1 + 0.2*self.np_random.randn(self.tanks.n))
+        # self.x = np.clip(self.x, np.zeros_like(self.tanks.heights), self.tanks.heights)
         return self.x
 
 
@@ -254,7 +269,7 @@ class TanksPhysicalEnv(gym.Env):
             A vector containing the new fuel tank levels.
         """
         self.t += self.tstep
-        x_next = self.solver.predict(self.tstep, self.x, action)[0][-1]
+        x_next = self.solver.predict(self.tstep, self.x, [action])[0][-1]
 
         median_demand = 0.5 * self.tanks.engines[self.median_e_idx] * self.odd_e
         left_demand = sum(self.tanks.engines[self.left_e_idx]) + median_demand
@@ -355,7 +370,9 @@ class TanksPhysicalEnv(gym.Env):
         """
         for p in self.params:
             val = params.get(p, self.og_params.get(p))
-            if isinstance(val, np.ndarray):
+            if isinstance(val, (np.ndarray, list, tuple)):
+                # copy so that object cannot be modified elsewhere
+                # or changes to object in simulation to not have side-effects
                 val = np.copy(val)
             elif val is None:
                 continue

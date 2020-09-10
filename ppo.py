@@ -5,8 +5,11 @@ import torch
 import torch.nn as nn
 from torch.distributions import Bernoulli, Categorical
 from torch.utils.tensorboard import SummaryWriter
+from higher import innerloop_ctx
 import gym
 from tqdm.auto import trange
+
+from utils import higher_dummy_context
 
 # pylint: disable=no-member
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -19,6 +22,7 @@ class Memory:
         self.states = []
         self.logprobs = []
         self.rewards = []
+        self.returns = []
         self.is_terminals = []
 
 
@@ -27,11 +31,12 @@ class Memory:
         del self.states[:]
         del self.logprobs[:]
         del self.rewards[:]
+        del self.returns[:]
         del self.is_terminals[:]
 
 
 
-class ActorCriticBinary(nn.Module):
+class ActorCriticMultiBinary(nn.Module):
 
 
     def __init__(self, state_dim, action_dim, n_latent_var):
@@ -58,8 +63,8 @@ class ActorCriticBinary(nn.Module):
                 )
 
 
-    def forward(self):
-        raise NotImplementedError
+    def forward(self, state, action):
+        return self.evaluate(state, action)
 
 
     def predict(self, state):
@@ -110,8 +115,8 @@ class ActorCriticDiscrete(nn.Module):
                 )
 
 
-    def forward(self):
-        raise NotImplementedError
+    def forward(self, state, action):
+        return self.evaluate(state, action)
 
 
     def predict(self, state):
@@ -140,7 +145,7 @@ class PPO:
 
     def __init__(self, env, policy, state_dim, action_dim, n_latent_var=64, lr=0.02,
                  betas=(0.9, 0.999), gamma=0.99, epochs=5, eps_clip=0.2,
-                 update_interval=2000, summary: SummaryWriter=None):
+                 update_interval=2000, seed=None, summary: SummaryWriter=None):
         self.env = env
         self.lr = lr
         self.betas = betas
@@ -154,19 +159,17 @@ class PPO:
         
         self.MseLoss = nn.MSELoss()
 
+        self.seed = seed
         self.summary = summary
+        self.meta_policy = None
+        torch.manual_seed(seed)
+
     
 
-    def update(self, policy, memory, epochs: int=1, optimizer=None, summary=None):
-        # Monte Carlo estimate of state rewards:
-        rewards = []
-        discounted_reward = 0
-        for reward, is_terminal in zip(reversed(memory.rewards), reversed(memory.is_terminals)):
-            if is_terminal:
-                discounted_reward = 0
-            discounted_reward = reward + (self.gamma * discounted_reward)
-            rewards.insert(0, discounted_reward)
+    def update(self, policy, memory, epochs: int=1, optimizer=None, summary=None,
+        higher_optim=False):
 
+        rewards = returns(memory.rewards, memory.is_terminals, self.gamma)
         # Casting to correct data type and DEVICE
         # pylint: disable=not-callable
         rewards = torch.tensor(rewards).float().to(DEVICE)
@@ -180,7 +183,7 @@ class PPO:
         # Optimize policy for K epochs:
         for e in range(epochs):
             # Evaluating old actions and values:
-            logprobs, state_values, dist_entropy = policy.evaluate(old_states, old_actions)
+            logprobs, state_values, dist_entropy = policy(old_states, old_actions)
             
             # Finding the ratio (pi_theta / pi_theta__old):
             ratios = torch.exp(logprobs - old_logprobs.detach())
@@ -196,11 +199,18 @@ class PPO:
             # Take gradient step. If optimizer==None, then just backpropagate
             # gradients.
             if optimizer is not None:
-                optimizer.zero_grad()
-                loss.mean().backward()
-                optimizer.step()
+                # the 'higher' library wraps optimizers to make parameters
+                # differentiable w.r.t earlier versions of parameters. Those
+                # optimizers to not need `backward()` and `zero_grad()`
+                if not higher_optim:
+                    optimizer.zero_grad()
+                    loss.mean().backward()
+                    optimizer.step()
+                else:
+                    optimizer.step(loss.mean())
             else:
                 loss.mean().backward()
+        return loss
 
 
     def experience(self, memory, timesteps, env, policy, state0=None):
@@ -217,37 +227,61 @@ class PPO:
             memory.logprobs.append(logprob)
             memory.rewards.append(reward)
             memory.is_terminals.append(done)
+        memory.returns = returns(memory.rewards, memory.is_terminals, self.gamma)
 
 
-    def learn(self, timesteps, update_interval=None):
+    def learn(self, timesteps, update_interval=None, track_higher_gradients=False):
         if update_interval is None:
             update_interval = self.update_interval
         state = self.env.reset()
         memory = Memory()
         episodic_rewards = [0.]
-        for t in trange(1, timesteps + 1, leave=False):
-            
-            # Running policy:
-            memory.states.append(state)
-            action, logprob = self.policy.predict(state)
-            # print('a', action, 'log(p(a))', logprob)
-            state, reward, done, _ = self.env.step(action)
-            episodic_rewards[-1] += reward
-            if done:
-                state = self.env.reset()
-                episodic_rewards.append(0.)
-            memory.actions.append(action)
-            memory.logprobs.append(logprob)
-            memory.rewards.append(reward)
-            memory.is_terminals.append(done)
-            
-            # update if its time
-            if t % update_interval == 0:
-                self.update(self.policy, memory, self.epochs, self.optimizer, self.summary)
-                memory.clear_memory()
+        # This context wraps the policy and optimizer to track parameter updates
+        # over time such that d Params(time=t) / d Params(time=t-n) can be calculated.
+        # If not tracking higher gradients, a dummy context is used which does
+        # nothing.
+        context = innerloop_ctx if track_higher_gradients else higher_dummy_context
+        with context(self.policy, self.optimizer, copy_initial_weights=False) \
+                as (policy, optimizer):
+
+            for t in trange(1, timesteps + 1, leave=False):
+                # Running policy:
+                memory.states.append(state)
+                action, logprob = policy.predict(state)
+                # print('a', action, 'log(p(a))', logprob)
+                state, reward, done, _ = self.env.step(action)
+                episodic_rewards[-1] += reward
+                if done:
+                    state = self.env.reset()
+                    episodic_rewards.append(0.)
+                memory.actions.append(action)
+                memory.logprobs.append(logprob)
+                memory.rewards.append(reward)
+                memory.is_terminals.append(done)
+                
+                # update if its time
+                if t % update_interval == 0:
+                    self.update(policy, memory, self.epochs, optimizer,
+                                self.summary, track_higher_gradients)
+                    memory.clear_memory()
+        
+            self.meta_policy = policy if track_higher_gradients else None
+        self.policy.load_state_dict(policy.state_dict())
         return episodic_rewards[:-1 if len(episodic_rewards) > 1 else None]
 
 
     def predict(self, state):
         return self.policy.predict(state)
 
+
+
+def returns(rewards, is_terminals, gamma):
+    # Monte Carlo estimate of state rewards:
+    returns = []
+    discounted_reward = 0
+    for reward, is_terminal in zip(reversed(rewards), reversed(is_terminals)):
+        if is_terminal:
+            discounted_reward = 0
+        discounted_reward = reward + (gamma * discounted_reward)
+        returns.insert(0, discounted_reward)
+    return returns

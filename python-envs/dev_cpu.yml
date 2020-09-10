@@ -22,3 +22,4 @@ dependencies:
     - stable-baselines3>=0.7.0
     - tensorboard
     - joblib
+    - higher==0.2.1

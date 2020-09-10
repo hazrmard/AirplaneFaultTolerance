@@ -1,7 +1,7 @@
 """
 Utility functions for data transformation and computations.
 """
-from typing import List, Tuple, Any, Union, Dict
+from typing import List, Tuple, Any, Union, Dict, Iterable
 from collections import OrderedDict
 import multiprocessing as mp
 from copy import deepcopy
@@ -10,6 +10,7 @@ import gym
 import numpy as np
 from sklearn.neural_network import MLPRegressor
 import torch
+from torch.autograd import grad
 from pytorchbridge import TorchEstimator
 
 
@@ -214,7 +215,74 @@ def copy_mlp_regressor(est: MLPRegressor, **params) -> MLPRegressor:
     elif isinstance(est, TorchEstimator):
         est_ = deepcopy(est)
         est_.module.load_state_dict(copy_tensor(est.module.state_dict()))
+        # Handle references to parameters in optimizer as well.
+        raise NotImplementedError('torch.nn.Module copy not implemented yet.')
     return est_
+
+
+
+def vectorize_parameters(p: Union[Dict, Iterable[torch.Tensor]]) -> torch.Tensor:
+    """
+    Convert a state dict or a list of tensors into a 1D vector.
+
+    Parameters
+    ----------
+    p : Union[Dict, Iterable[torch.Tensor]]
+        The result of a `module.state_dict()` or `module.parameters()` containing
+        `torch.Tensor`s.
+
+    Returns
+    -------
+    torch.Tensor
+        A 1D vector of flattened tensors.
+    """
+    if isinstance(p, (dict, OrderedDict)):
+        plist = []
+        for _, param in p.items():
+            plist.append(param.flatten())
+    else:
+        plist = list(map(torch.flatten, p))
+    return torch.cat(plist)
+
+
+
+def get_gradients(params: Iterable[torch.Tensor], wrtparams: Iterable[torch.Tensor])\
+    -> Iterable[torch.Tensor]:
+    """
+    Generate dictionary or list of gradients of provided tensors.
+
+    Parameters
+    ----------
+    p : Iterable[torch.Tensor]
+        The result of `module.parameters()` containing `torch.Tensor`s which
+        have gradients.
+
+    Returns
+    -------
+    Iterable[torch.Tensor]
+        The gradients of the input in the same structure.
+    """
+    gradients = []
+    for param, wrt in zip(params, wrtparams):
+        g = grad(param.sum(), wrt, allow_unused=True, retain_graph=True)[0]
+        gradients.append(g)
+    return gradients
+
+
+
+def get_difference(pto: Union[Dict, Iterable[torch.Tensor]],
+        pfrom: Union[Dict, Iterable[torch.Tensor]]) -> \
+        Union[Dict, Iterable[torch.Tensor]]:
+    if isinstance(pto, (dict, OrderedDict)):
+        ddict = OrderedDict()
+        for key in pto:
+            ddict[key] = pto[key] - pfrom[key]
+        return ddict
+    else:
+        glist = []
+        for paramto, paramfrom in zip(pto, pfrom):
+            glist.append(paramto - paramfrom)
+        return glist
 
 
 
@@ -222,9 +290,28 @@ def sanitize_filename(fname: str) -> str:
     fname = fname.replace(':', '')
     fname = fname.replace("'", '')
     fname = fname.replace(' ', '')
-    fname = fname.replace(',', '_')
+    fname = fname.replace(',', '-')
     fname = fname.replace('{', '')
     fname = fname.replace('}', '')
     fname = fname.replace('(', '')
     fname = fname.replace(')', '')
+    fname = fname.replace('[', '_')
+    fname = fname.replace(']', '_')
     return fname
+
+
+
+class higher_dummy_context:
+
+
+    def __init__(self, model, optimizer, *args, **kwargs):
+        self.model = model
+        self.optimizer = optimizer
+
+        
+    def __enter__(self):
+        return self.model, self.optimizer
+
+
+    def __exit__(self, *args):
+        return None
