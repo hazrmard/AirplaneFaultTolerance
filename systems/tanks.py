@@ -168,7 +168,6 @@ class TanksFactory:
         self.y = _y
 
 
-
 class TanksPhysicalEnv(gym.Env):
     """
     An `OpenAI Gym` environment for simulating a fuel system model generated
@@ -378,6 +377,12 @@ class TanksPhysicalEnv(gym.Env):
                 continue
             setattr(self.tanks, p, val)
 
+
+    def plot(self, agent=None, state0=None, plot='both'):
+        backups = (self.x, self.t)
+        self.x = state0
+        plot_tanks(self, agent, plot)
+        self.x, self.t = backups
 
 
 class TanksDataEnv(TanksPhysicalEnv):

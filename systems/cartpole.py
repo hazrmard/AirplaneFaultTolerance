@@ -41,6 +41,12 @@ class CartPoleEnv(OGCartPole):
         return random_cartpole(self.np_random, env=self)
 
 
+    def plot(self, agent=None, state0=None):
+        backup = self.state
+        plot_cartpole(self, agent, state0)
+        self.state = backup
+
+
 
 # pylint: disable=no-member
 def random_cartpole(random: np.random.RandomState=None, env=None):
@@ -104,7 +110,6 @@ class CartPoleDataEnv(CartPoleEnv):
 
 
 def plot_cartpole(env, agent=None, state0=None):
-    state = env.reset()
     if agent=='left':
         actor = lambda s: 0
     elif agent=='right':
@@ -117,6 +122,8 @@ def plot_cartpole(env, agent=None, state0=None):
     if state0 is not None:
         env.state = state0
         state = state0
+    else:
+        state = env.reset()
 
     done = False
     states = [state]
