@@ -109,7 +109,7 @@ class CartPoleDataEnv(CartPoleEnv):
 
 
 
-def plot_cartpole(env, agent=None, state0=None):
+def plot_cartpole(env, agent=None, state0=None, maxlen=500, legend=True):
     if agent=='left':
         actor = lambda s: 0
     elif agent=='right':
@@ -128,18 +128,25 @@ def plot_cartpole(env, agent=None, state0=None):
     done = False
     states = [state]
     actions = []
-    while not done:
+    t = 0
+    while not done and t < maxlen:
         action = actor(state)
         actions.append(action)
         state, _, done, _ = env.step(action)
         states.append(state)
+        t += 1
 
     states = np.asarray(states)
     actions = np.asarray(actions)
     x, theta = states[:, 0], states[:, 2]
-    xline = plt.plot(x, label='X')[0]
-    thetaline = plt.plot(theta, label='Angle /rad')[0]
-    plt.legend()
+    xline = plt.plot(x, 'b-', label='X')[0]
+    plt.ylabel('X')
+    plt.ylim(bottom=-env.x_threshold, top=env.x_threshold)
+    plt.twinx()
+    thetaline = plt.plot(theta, 'g:', label='Angle /rad')[0]
+    plt.ylabel('Angle /rad')
+    plt.ylim(bottom=-env.theta_threshold_radians, top=env.theta_threshold_radians)
+    # plt.legend()
     # pylint: disable=no-member
     im = plt.imshow(actions.reshape(1, -1), aspect='auto', alpha=0.3,
                     extent=(*plt.xlim(), *plt.ylim()), origin='lower',
@@ -147,5 +154,7 @@ def plot_cartpole(env, agent=None, state0=None):
     colors = [im.cmap(im.norm(value)) for value in (0, 1)]
     patches = [mpatches.Patch(color=colors[0], label="Left", alpha=0.3),
                mpatches.Patch(color=colors[1], label="Right", alpha=0.3)]
-    plt.legend(handles=[xline, thetaline] + patches)
     plt.grid(True)
+    if legend:
+        plt.legend(handles=[xline, thetaline] + patches)
+    return [xline, thetaline] + patches, ('X', 'Angle /rad', 'Left', 'Right')

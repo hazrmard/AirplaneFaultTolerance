@@ -276,7 +276,7 @@ class TanksPhysicalEnv(gym.Env):
         median_supply = 0.5 * x_next[self.median_idx] * self.odd
         left_supply = sum(x_next[self.left_idx] + median_supply)
         right_supply = sum(x_next[self.right_idx] + median_supply)
-        done = (left_demand > left_supply) or (right_demand > right_supply) 
+        done = (left_demand > left_supply) or (right_demand > right_supply) or self.t > self.episode_length
         
         reward = self.reward(self.t, self.x, action, x_next, done)
         self.x = x_next
@@ -460,7 +460,7 @@ class TanksDataRecurrentEnv(TanksDataEnv):
 
 
 
-def plot_tanks(env, agent=None, plot='both'):
+def plot_tanks(env, agent=None, plot='both', columns=2, single_size=(6,4), legend=True):
     n_tanks = len(env.tanks.heights)
     if agent is not None:
         x, u, done = [], [], False
@@ -493,10 +493,13 @@ def plot_tanks(env, agent=None, plot='both'):
         for i in range(len(u_open)):
             x_open[i] = env.step(u_open[i])[0]
 
-    plt.figure(figsize=(12, 12))
+    width, height = single_size
+    rows = n_tanks // columns + (1 if n_tanks % columns else 0)
+    figsize = (columns * width, rows * height)
+    plt.figure(figsize=figsize)
     patches = None
     for i in range(n_tanks):
-        plt.subplot(n_tanks // 2, 2, i+1)
+        plt.subplot(rows, columns, i+1)
         plt.ylim(0, 1.05 * max(env.tanks.heights))
         if plot in ('open', 'both'):
             plt.plot(x_open[:, i], '--', label='Open' if i==n_tanks-1 else None)
@@ -512,8 +515,12 @@ def plot_tanks(env, agent=None, plot='both'):
                 patches = [mpatches.Patch(color=colors[0], label="Closed", alpha=0.3),
                            mpatches.Patch(color=colors[1], label="Opened", alpha=0.3),]
             plt.plot(x[:, i], '-', label='RL' if i==n_tanks-1 else None)
+        
+        if i !=0 and i % columns !=0:
+            plt.gca().set_yticklabels([])
         plt.ylabel('Tank ' + str(i + 1))
-        if i >= 4: plt.xlabel('Time /s')
-        if (i == n_tanks-2) and patches is not None: plt.legend(handles=patches)
-        if i==n_tanks-1: plt.legend()
+        if i >= columns * (rows-1) and legend: plt.xlabel('Time /s')
+        if (i == n_tanks-2) and patches is not None and legend: plt.legend(handles=patches)
+        if i==n_tanks-1 and legend: plt.legend()
         plt.grid(True)
+        # plt.tight_layout()
