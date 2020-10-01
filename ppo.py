@@ -3,10 +3,11 @@ https://github.com/nikhilbarhate99/PPO-PyTorch/blob/master/PPO.py
 """
 import torch
 import torch.nn as nn
-from torch.distributions import Bernoulli, Categorical
+from torch.distributions import Distribution, Bernoulli, Categorical, MultivariateNormal
 from torch.utils.tensorboard import SummaryWriter
 from higher import innerloop_ctx
 import gym
+import numpy as np
 from tqdm.auto import trange
 
 from utils import higher_dummy_context
@@ -36,83 +37,29 @@ class Memory:
 
 
 
-class ActorCriticMultiBinary(nn.Module):
+class Policy(nn.Module):
+
+    dist = Distribution
+    dist_kwargs = None
 
 
     def __init__(self, state_dim, action_dim, n_latent_var):
         super().__init__()
-        self.action_dim = action_dim
         self.state_dim = state_dim
+        self.action_dim = action_dim
         self.n_latent_var = n_latent_var
 
-        self.action_layer = nn.Sequential(
-                nn.Linear(state_dim, n_latent_var),
-                nn.Tanh(),
-                nn.Linear(n_latent_var, n_latent_var),
-                nn.Tanh(),
-                nn.Linear(n_latent_var, action_dim),
-                nn.Sigmoid()
-                )
-        
+        self.base = None
+
         self.value_layer = nn.Sequential(
-                nn.Linear(state_dim, n_latent_var),
-                nn.Tanh(),
-                nn.Linear(n_latent_var, n_latent_var),
-                nn.Tanh(),
-                nn.Linear(n_latent_var, 1)
-                )
-
-
-    def forward(self, state, action):
-        return self.evaluate(state, action)
-
-
-    def predict(self, state):
-        state = torch.from_numpy(state).float().to(DEVICE)
-        action_probs = self.action_layer(state)  # [Multi]Binary
-        dist = Bernoulli(action_probs)
-        action = dist.sample()
-        return action.squeeze().cpu().numpy(), dist.log_prob(action).sum(-1).item()
-
-
-    def evaluate(self, state, action):
-        action_probs = self.action_layer(state)  # [Multi]Binary
-        dist = Bernoulli(action_probs)
+                    nn.Linear(state_dim, n_latent_var),
+                    nn.Tanh(),
+                    nn.Linear(n_latent_var, n_latent_var),
+                    nn.Tanh(),
+                    nn.Linear(n_latent_var, 1)
+                    )
         
-        action_logprobs = dist.log_prob(action).sum(-1)
-        dist_entropy = dist.entropy()
-        
-        state_value = self.value_layer(state)
-        
-        return action_logprobs, torch.squeeze(state_value), dist_entropy
-
-
-
-class ActorCriticDiscrete(nn.Module):
-
-
-    def __init__(self, state_dim, action_dim, n_latent_var):
-        super().__init__()
-        self.action_dim = action_dim
-        self.state_dim = state_dim
-        self.n_latent_var = n_latent_var
-
-        self.action_layer = nn.Sequential(
-                nn.Linear(state_dim, n_latent_var),
-                nn.Tanh(),
-                nn.Linear(n_latent_var, n_latent_var),
-                nn.Tanh(),
-                nn.Linear(n_latent_var, action_dim),
-                nn.Softmax(dim=-1)
-                )
-        
-        self.value_layer = nn.Sequential(
-                nn.Linear(state_dim, n_latent_var),
-                nn.Tanh(),
-                nn.Linear(n_latent_var, n_latent_var),
-                nn.Tanh(),
-                nn.Linear(n_latent_var, 1)
-                )
+        self.action_layer = lambda x: x
 
 
     def forward(self, state, action):
@@ -123,14 +70,14 @@ class ActorCriticDiscrete(nn.Module):
         # pylint: disable=no-member
         state = torch.from_numpy(state).float().to(DEVICE)
         action_probs = self.action_layer(state)  # Discrete
-        dist = Categorical(action_probs)
+        dist = self.dist(action_probs, **self.dist_kwargs)
         action = dist.sample()
-        return action.squeeze().cpu().item(), dist.log_prob(action).item()
+        return action.squeeze().cpu(), dist.log_prob(action).cpu()
 
 
     def evaluate(self, state, action):
         action_probs = self.action_layer(state)  # Discrete
-        dist = Categorical(action_probs)
+        dist = self.dist(action_probs, **self.dist_kwargs)
         
         action_logprobs = dist.log_prob(action)
         dist_entropy = dist.entropy() # TODO, sum entropy over variables
@@ -138,6 +85,86 @@ class ActorCriticDiscrete(nn.Module):
         state_value = self.value_layer(state)
         
         return action_logprobs, torch.squeeze(state_value), dist_entropy
+
+
+class ActorCriticMultiBinary(Policy):
+
+    dist = Bernoulli
+    dist_kwargs = {}
+
+
+    def __init__(self, state_dim, action_dim, n_latent_var):
+        super().__init__(state_dim, action_dim, n_latent_var)
+
+        self.action_layer = nn.Sequential(
+                nn.Linear(state_dim, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, action_dim),
+                nn.Sigmoid()
+                )
+
+
+    def predict(self, state):
+        action, log_prob = super().predict(state)
+        return action.numpy(), log_prob.sum(-1).item()
+
+
+    def evaluate(self, state, action):
+        action_logprobs, state_value, dist_entropy = \
+            super().evaluate(state, action)
+        return action_logprobs.sum(-1), state_value, dist_entropy
+
+
+
+class ActorCriticDiscrete(Policy):
+
+    dist = Categorical
+    dist_kwargs = {}
+
+    def __init__(self, state_dim, action_dim, n_latent_var):
+        super().__init__(state_dim=state_dim, action_dim=action_dim, n_latent_var=n_latent_var)
+
+        self.action_layer = nn.Sequential(
+                nn.Linear(state_dim, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, action_dim),
+                nn.Softmax(dim=-1)
+                )
+
+
+    def predict(self, state):
+        action, log_prob = super().predict(state)
+        return action.item(), log_prob.item()
+
+
+
+class ActorCriticBox(Policy):
+
+    dist = MultivariateNormal
+    dist_kwargs = {}
+
+
+    def __init__(self, state_dim, action_dim, n_latent_var, action_std=0.05):
+        super().__init__(state_dim=state_dim, action_dim=action_dim, n_latent_var=n_latent_var)
+
+        self.action_layer = nn.Sequential(
+                nn.Linear(state_dim, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, action_dim),
+                )
+        self.dist_kwargs = dict(covariance_matrix=(torch.eye(action_dim) * action_std).to(DEVICE))
+
+
+    def predict(self, state):
+        action, log_prob = super().predict(state)
+        return action.numpy(), log_prob.item()
+
 
         
 class PPO:
@@ -159,10 +186,11 @@ class PPO:
         
         self.MseLoss = nn.MSELoss()
 
-        self.seed = seed
+        self.random = np.random.RandomState(seed)
+        self.seed = self.random.rand() if seed is None else seed
         self.summary = summary
         self.meta_policy = None
-        torch.manual_seed(seed)
+        torch.manual_seed(self.seed)
 
     
 
@@ -176,6 +204,15 @@ class PPO:
         old_states = torch.tensor(memory.states).float().to(DEVICE).detach()
         old_actions = torch.tensor(memory.actions).float().to(DEVICE).detach()
         old_logprobs = torch.tensor(memory.logprobs).float().to(DEVICE).detach()
+
+        # If states/actions are 1D arrays of single number states/actions,
+        # convert them to 2D matrix of 1 column where each row is one timestep.
+        # This is to make sure the 0th dimension always indexes time, and the
+        # last dimension indexes feature.
+        if policy.state_dim == 1 and old_states.ndim == 1:
+            old_states = old_states.unsqueeze(dim=-1)
+        if policy.action_dim == 1 and old_actions.ndim == 1:
+            old_actions = old_actions.unsqueeze(dim=-1)
 
         # Normalizing the rewards:
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-5)
