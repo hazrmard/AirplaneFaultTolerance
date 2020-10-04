@@ -27,6 +27,7 @@ from .cartpole import CartPoleEnv
 from gym.spaces import Box
 from gym import logger
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 
@@ -95,3 +96,55 @@ class CartPoleContinuousEnv(CartPoleEnv):
             reward = 0.0
 
         return np.array(self.state), reward, done, {}
+
+
+
+def plot_cartpole_continuous(env, agent=None, state0=None, maxlen=500, legend=True):
+    if agent=='left':
+        actor = lambda s: np.asarray([0.])
+    elif agent=='right':
+        actor = lambda s: np.asarray([1.])
+    elif agent is None:
+        actor = lambda s: env.action_space.sample()
+    else:
+        actor = lambda s: agent.predict(s)[0]
+
+    if state0 is not None:
+        env.state = state0
+        state = state0
+    else:
+        state = env.reset()
+
+    done = False
+    states = [state]
+    actions = []
+    t = 0
+    while not done and t < maxlen:
+        action = actor(state)
+        actions.append(action)
+        state, _, done, _ = env.step(action)
+        states.append(state)
+        t += 1
+
+    states = np.asarray(states)
+    actions = np.asarray(actions)
+    x, theta = states[:, 0], states[:, 2]
+    xline = plt.plot(x, 'b-', label='X')[0]
+    plt.ylabel('X')
+    plt.ylim(bottom=-env.x_threshold, top=env.x_threshold)
+    plt.twinx()
+    thetaline = plt.plot(theta, 'g:', label='Angle /rad')[0]
+    plt.ylabel('Angle /rad')
+    plt.ylim(bottom=-env.theta_threshold_radians, top=env.theta_threshold_radians)
+    # plt.legend()
+    # pylint: disable=no-member
+    im = plt.imshow(actions.reshape(1, -1), aspect='auto', alpha=0.3,
+                    extent=(*plt.xlim(), *plt.ylim()), origin='lower',
+                    vmin=-1, vmax=1, cmap=plt.cm.coolwarm) # vmin/vmax differ from cartpole
+    colors = [im.cmap(im.norm(value)) for value in (-1, 1)]
+    patches = [mpatches.Patch(color=colors[0], label="Left", alpha=0.3),
+               mpatches.Patch(color=colors[1], label="Right", alpha=0.3)]
+    plt.grid(True)
+    if legend:
+        plt.legend(handles=[xline, thetaline] + patches)
+    return [xline, thetaline] + patches, ('X', 'Angle /rad', 'Left', 'Right')
