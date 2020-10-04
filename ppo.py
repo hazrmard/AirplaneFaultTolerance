@@ -66,16 +66,16 @@ class Policy(nn.Module):
         return self.evaluate(state, action)
 
 
-    def predict(self, state):
+    def predict(self, state: np.ndarray):
         # pylint: disable=no-member
         state = torch.from_numpy(state).float().to(DEVICE)
         action_probs = self.action_layer(state)  # Discrete
         dist = self.dist(action_probs, **self.dist_kwargs)
         action = dist.sample()
-        return action.squeeze().cpu(), dist.log_prob(action).cpu()
+        return action.cpu(), dist.log_prob(action).cpu()
 
 
-    def evaluate(self, state, action):
+    def evaluate(self, state: torch.Tensor, action: torch.Tensor):
         action_probs = self.action_layer(state)  # Discrete
         dist = self.dist(action_probs, **self.dist_kwargs)
         
@@ -85,6 +85,30 @@ class Policy(nn.Module):
         state_value = self.value_layer(state)
         
         return action_logprobs, torch.squeeze(state_value), dist_entropy
+
+
+
+class ActorCriticDiscrete(Policy):
+
+    dist = Categorical
+    dist_kwargs = {}
+
+    def __init__(self, state_dim, action_dim, n_latent_var):
+        super().__init__(state_dim=state_dim, action_dim=action_dim, n_latent_var=n_latent_var)
+
+        self.action_layer = nn.Sequential(
+                nn.Linear(state_dim, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, n_latent_var),
+                nn.Tanh(),
+                nn.Linear(n_latent_var, action_dim),
+                nn.Softmax(dim=-1)
+                )
+
+
+    def predict(self, state):
+        action, log_prob = super().predict(state)
+        return action.item(), log_prob.item()
 
 
 class ActorCriticMultiBinary(Policy):
@@ -118,37 +142,13 @@ class ActorCriticMultiBinary(Policy):
 
 
 
-class ActorCriticDiscrete(Policy):
-
-    dist = Categorical
-    dist_kwargs = {}
-
-    def __init__(self, state_dim, action_dim, n_latent_var):
-        super().__init__(state_dim=state_dim, action_dim=action_dim, n_latent_var=n_latent_var)
-
-        self.action_layer = nn.Sequential(
-                nn.Linear(state_dim, n_latent_var),
-                nn.Tanh(),
-                nn.Linear(n_latent_var, n_latent_var),
-                nn.Tanh(),
-                nn.Linear(n_latent_var, action_dim),
-                nn.Softmax(dim=-1)
-                )
-
-
-    def predict(self, state):
-        action, log_prob = super().predict(state)
-        return action.item(), log_prob.item()
-
-
-
 class ActorCriticBox(Policy):
 
     dist = MultivariateNormal
     dist_kwargs = {}
 
 
-    def __init__(self, state_dim, action_dim, n_latent_var, action_std=0.05):
+    def __init__(self, state_dim, action_dim, n_latent_var, action_std=0.1):
         super().__init__(state_dim=state_dim, action_dim=action_dim, n_latent_var=n_latent_var)
 
         self.action_layer = nn.Sequential(
@@ -157,13 +157,14 @@ class ActorCriticBox(Policy):
                 nn.Linear(n_latent_var, n_latent_var),
                 nn.Tanh(),
                 nn.Linear(n_latent_var, action_dim),
+                nn.Tanh()
                 )
         self.dist_kwargs = dict(covariance_matrix=(torch.eye(action_dim) * action_std).to(DEVICE))
 
 
     def predict(self, state):
         action, log_prob = super().predict(state)
-        return action.numpy(), log_prob.item()
+        return torch.clamp(action, -1., 1.).numpy(), log_prob.item()
 
 
         
