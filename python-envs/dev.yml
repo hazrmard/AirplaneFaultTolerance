@@ -19,7 +19,7 @@ dependencies:
   - pip
   - pip:
     - gym[box2d]
-    - stable-baselines3>=0.7.0
+    - stable-baselines3==0.9.0
     - tensorboard
     - joblib
     - higher==0.2.1

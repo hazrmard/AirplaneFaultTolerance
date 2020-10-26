@@ -33,7 +33,10 @@ import scipy.integrate
 import scipy.stats as stats
 import numpy as np
 from scipy import signal
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import gym
+from tqdm.auto import tqdm
 
 
 lower, upper = 0, 1
@@ -100,44 +103,46 @@ class Motor:
 class Quadcopter:
     # State space representation: [x y z x_dot y_dot z_dot theta phi gamma theta_dot phi_dot gamma_dot]
     # From Quadcopter Dynamics, Simulation, and Control by Andrew Gibiansky
-    def __init__(self, quad=QUADPARAMS, gravity=9.81, b=0.0245):
-        self.quad = deepcopy(quad) # a shallow copy of `quad` so any new keys are
-                                 # not reflected in the passed quad
+    def __init__(self, quad=QUADPARAMS, gravity=9.81, b=0.0245, random=np.random.RandomState()):
+        # a copy of `quad` so any QUADPARAMS are not changed
+        self.quad = deepcopy(quad)
+        self.random = random
+        # Initialize variables
+        self.reset()
         self.g = gravity
         self.b = b
         self.wind = True
-        self.windMag = 0
-        self.thread_object = None
-        self.ode = scipy.integrate.ode(self.state_dot).set_integrator('vode', nsteps=500,method='bdf')
-        self.time = datetime.datetime.now()
-        self.stepNum = 0
-        self.airspeed = 15
-        self.randWind = self.generate_wind_turbulence(5)
-        self.XWind = 0
-        self.YWind = 0
-        self.ZWind = 0
-        self.state = np.zeros(12)
 
-        self.state = np.zeros(12)
-        self.state[0:3] = self.quad['position']
-        self.state[6:9] = self.quad['orientation']
-        # self.motors = [
-        #     Motor(self.quad['prop_size'][0],self.quad['prop_size'][1]),
-        #     Motor(self.quad['prop_size'][0],self.quad['prop_size'][1]),
-        #     Motor(self.quad['prop_size'][0],self.quad['prop_size'][1]),
-        #     Motor(self.quad['prop_size'][0],self.quad['prop_size'][1]),
-        # ]
-        self.quad['m1'] = Motor(self.quad['prop_size'][0],self.quad['prop_size'][1])
-        self.quad['m2'] = Motor(self.quad['prop_size'][0],self.quad['prop_size'][1])
-        self.quad['m3'] = Motor(self.quad['prop_size'][0],self.quad['prop_size'][1])
-        self.quad['m4'] = Motor(self.quad['prop_size'][0],self.quad['prop_size'][1])
+        # Wind disturbance
+        # self.windMag = 0
+        self.airspeed = 15
+        self.nom_wind = np.zeros(3)
+        self.rand_wind = self.generate_wind_turbulence(5)
+
+        # Motors
+        self.quad['m1'] = Motor(self.quad['prop_size'][0], self.quad['prop_size'][1])
+        self.quad['m2'] = Motor(self.quad['prop_size'][0], self.quad['prop_size'][1])
+        self.quad['m3'] = Motor(self.quad['prop_size'][0], self.quad['prop_size'][1])
+        self.quad['m4'] = Motor(self.quad['prop_size'][0], self.quad['prop_size'][1])
         # From Quadrotor Dynamics and Control by Randal Beard
-        ixx=((2*self.quad['weight']*self.quad['r']**2)/5)+(2*self.quad['weight']*self.quad['L']**2)
-        iyy=ixx
-        izz=((2*self.quad['weight']*self.quad['r']**2)/5)+(4*self.quad['weight']*self.quad['L']**2)
+        ixx = ((2*self.quad['weight']*self.quad['r']**2)/5)+(2*self.quad['weight']*self.quad['L']**2)
+        iyy = ixx
+        izz = ((2*self.quad['weight']*self.quad['r']**2)/5)+(4*self.quad['weight']*self.quad['L']**2)
         self.quad['I'] = np.array([[ixx,0,0],[0,iyy,0],[0,0,izz]])
         self.quad['invI'] = np.linalg.inv(self.quad['I'])
+
+        # Scaffolding for running simulation
+        self.ode = scipy.integrate.ode(self.state_dot).set_integrator('vode', nsteps=500,method='bdf')
+        self.thread_object = None
         self.run = True
+
+
+    def reset(self):
+        self.stepNum = 0
+        self.state = np.zeros(12, dtype=np.float32)
+        self.state[0:3] = self.quad['position']
+        self.state[6:9] = self.quad['orientation']
+        self.time = datetime.datetime.now()
 
 
     def rotation_matrix(self, angles):
@@ -158,14 +163,12 @@ class Quadcopter:
         return( (val + np.pi) % (2 * np.pi) - np.pi)
 
 
-    def setWind(self, wind_vec):
-        self.randWind = wind_vec
+    def setWind(self, winds: np.ndarray):
+        self.rand_wind = wind_vec
 
 
-    def setNormalWind(self, winds):
-        self.XWind = winds[0]
-        self.YWind = winds[1]
-        self.ZWind = winds[2]
+    def setNormalWind(self, winds: np.ndarray):
+        self.nom_wind = winds
 
 
     def state_dot(self, time, state):
@@ -176,7 +179,7 @@ class Quadcopter:
         state_dot[2] = self.state[5]
         # The acceleration
         height = self.state[2]
-        F_d  = np.array([ 0, 0, 0])
+        F_d = np.zeros(3)
         air_density = 1.225 #kg/m^3
         C_d = 1
         cube_width = 0.1 # 10cm x 10cm cube as shape model of quadcopter
@@ -187,24 +190,21 @@ class Quadcopter:
         A = [ A_yz , A_xz  , A_xy  ] # cross sectional area in each axis perpendicular to velocity axis
 
         #if wind is active the velocity in each axis is subject to wind
-        nomX = self.XWind
-        nomY = self.YWind
-        nomZ = self.ZWind
+        nomX, nomY, nomZ = self.nom_wind
 
         if(self.stepNum > 19500):
             self.stepNum = 0
-        randX = self.randWind[0][self.stepNum]
-        randY = self.randWind[1][self.stepNum]
-        randZ = self.randWind[2][self.stepNum]
+        randX = self.rand_wind[0, self.stepNum]
+        randY = self.rand_wind[1, self.stepNum]
+        randZ = self.rand_wind[2, self.stepNum]
 
 
-        #wind_velocity_vector = self.randWind
-        wind_velocity_vector = [ nomX + randX  , nomY + randY  , nomZ + randZ] # wind velocity in each axis
+        #wind_velocity_vector = self.rand_wind
+        wind_velocity_vector = [nomX + randX, nomY + randY, nomZ + randZ] # wind velocity in each axis
 
-        wind_vel_inertial_frame = np.dot(self.rotation_matrix(self.state[6:9]) ,  wind_velocity_vector)
-        V_b = [ state[0], state[1] , state[2]]
+        wind_vel_inertial_frame = np.dot(self.rotation_matrix(self.state[6:9]), wind_velocity_vector)
+        V_b = [state[0], state[1], state[2]]
         V_a = wind_vel_inertial_frame  - V_b
-        #print(V_a)
 
         DragVector = [
             A[0] * (V_a[0] * abs(V_a[0])),
@@ -213,11 +213,11 @@ class Quadcopter:
         ]
 
         F_d = [i * (0.5 * air_density * C_d) for i in DragVector]
-        #form drag is a -0.5 and wind seems to be a +0.5. why??
-            # the velocity is subtracted from wind ?
 
-        x_dotdot = np.array([0,0,-self.quad['weight']*self.g]) \
-                   + np.dot(self.rotation_matrix(self.state[6:9]),np.array([0,0,(self.quad['m1'].thrust + self.quad['m2'].thrust + self.quad['m3'].thrust + self.quad['m4'].thrust)]))/self.quad['weight'] \
+        x_dotdot = np.array([0, 0, -self.quad['weight'] * self.g]) \
+                   + np.dot(self.rotation_matrix(self.state[6:9]),
+                            np.array([0 ,0 ,(self.quad['m1'].thrust + self.quad['m2'].thrust + self.quad['m3'].thrust + self.quad['m4'].thrust)])) \
+                            /self.quad['weight'] \
                    + F_d
 
         state_dot[3] = x_dotdot[0]
@@ -229,10 +229,10 @@ class Quadcopter:
         state_dot[8] = self.state[11]
         # The angular accelerations
         omega = self.state[9:12]
-        tau = np.array([self.quad['L']*(self.quad['m1'].thrust-self.quad['m3'].thrust),
-                        self.quad['L']*(self.quad['m2'].thrust-self.quad['m4'].thrust),
-                        self.b*(self.quad['m1'].thrust-self.quad['m2'].thrust+self.quad['m3'].thrust-self.quad['m4'].thrust)])
-        omega_dot = np.dot(self.quad['invI'], (tau - np.cross(omega, np.dot(self.quad['I'],omega))))
+        tau = np.array([self.quad['L'] * (self.quad['m1'].thrust-self.quad['m3'].thrust),
+                        self.quad['L'] * (self.quad['m2'].thrust-self.quad['m4'].thrust),
+                        self.b * (self.quad['m1'].thrust - self.quad['m2'].thrust + self.quad['m3'].thrust - self.quad['m4'].thrust)])
+        omega_dot = np.dot(self.quad['invI'], (tau - np.cross(omega, np.dot(self.quad['I'], omega))))
         state_dot[9] = omega_dot[0]
         state_dot[10] = omega_dot[1]
         state_dot[11] = omega_dot[2]
@@ -240,11 +240,11 @@ class Quadcopter:
 
 
     def update(self, dt):
-        self.stepNum +=1
+        self.stepNum += 1
         self.ode.set_initial_value(self.state,0)
         self.state = self.ode.integrate(self.ode.t + dt)
         self.state[6:9] = self.wrap_angle(self.state[6:9])
-        self.state[2] = max(0,self.state[2])
+        self.state[2] = max(0, self.state[2])
 
 
     def generate_wind_turbulence(self, h):
@@ -260,13 +260,13 @@ class Quadcopter:
 
         # the random number seed used same as from SIMULINK blockset
         np.random.seed(23341)
-        samples1 = 10 * np.random.normal(mean, std, size=num_samples)
+        samples1 = 10 * self.random.normal(mean, std, size=num_samples)
 
         np.random.seed(23342)
-        samples2 = 10 * np.random.normal(mean, std, size=num_samples)
+        samples2 = 10 * self.random.normal(mean, std, size=num_samples)
 
         np.random.seed(23343)
-        samples3 = 10 * np.random.normal(mean, std, size=num_samples)
+        samples3 = 10 * self.random.normal(mean, std, size=num_samples)
 
         tf_u = u_transfer_function(height, airspeed)
         tf_v = v_transfer_function(height, airspeed)
@@ -283,7 +283,7 @@ class Quadcopter:
         # tout3, y3, x3 = signal.lsim(tf_w, n3, t_w)
         y3_f = [i * 0.305 for i in y3]
 
-        return [ y1_f, y2_f ,  y3_f ]
+        return np.asarray([y1_f, y2_f, y3_f])
 
 
     def set_motor_speeds(self, speeds):
@@ -291,7 +291,6 @@ class Quadcopter:
         self.quad['m2'].set_speed(speeds[1])
         self.quad['m3'].set_speed(speeds[2])
         self.quad['m4'].set_speed(speeds[3])
-       # print(speeds)
 
 
     def get_motor_speeds(self):
@@ -323,11 +322,11 @@ class Quadcopter:
         return self.state
 
 
-    def set_position(self,position):
+    def set_position(self, position):
         self.state[0:3] = position
 
 
-    def set_orientation(self,orientation):
+    def set_orientation(self, orientation):
         self.state[6:9] = orientation
 
 
@@ -335,7 +334,7 @@ class Quadcopter:
         return self.time
 
 
-    def thread_run(self,dt,time_scaling):
+    def thread_run(self,dt, time_scaling):
         rate = time_scaling*dt
         last_update = self.time
         while(self.run==True):
@@ -346,23 +345,19 @@ class Quadcopter:
                 last_update = self.time
 
 
-    def stepQuad(self,dt=0.05):
+    def stepQuad(self, dt=0.05):
         self.update(dt)
         return
 
 
     def set_motor_faults(self, faults):
-        f1 = faults[0]
-        f2 =faults[1]
-        f3 =faults[2]
-        f4 =faults[3]
-        self.quad['m1'].set_fault(f1)
-        self.quad['m2'].set_fault(f2)
-        self.quad['m3'].set_fault(f3)
-        self.quad['m4'].set_fault(f4)
+        self.quad['m1'].set_fault(faults[0])
+        self.quad['m2'].set_fault(faults[1])
+        self.quad['m3'].set_fault(faults[2])
+        self.quad['m4'].set_fault(faults[3])
 
 
-    def start_thread(self, dt=0.002, time_scaling=1):
+    def start_thread(self, dt=0.05, time_scaling=1):
         self.thread_object = threading.Thread(target=self.thread_run, args=(dt, time_scaling))
         self.thread_object.start()
 
@@ -443,21 +438,24 @@ class Controller:
         
         self.LINEAR_TO_ANGULAR_SCALER = params['Linear_To_Angular_Scaler']
         self.YAW_RATE_SCALER = params['Yaw_Rate_Scaler']
+        self.reset()
         
+
+    def reset(self):
         self.xi_term = 0
         self.yi_term = 0
         self.zi_term = 0
         self.thetai_term = 0
         self.phii_term = 0
         self.gammai_term = 0
-        self.thread_object = None
-        self.target = [0,0,0]
+        self.target = [0, 0, 0]
         self.yaw_target = 0.0
+        self.thread_object = None
         self.run = True
 
 
-    def wrap_angle(self,val):
-        return( ( val + np.pi) % (2 * np.pi ) - np.pi )
+    def wrap_angle(self, val):
+        return((val + np.pi) % (2 * np.pi) - np.pi)
 
 
     def get_control(self) -> np.ndarray:
@@ -508,7 +506,7 @@ class Controller:
         self.quadcopter.set_motor_speeds(m)
 
 
-    def update_target(self,target):
+    def update_target(self, target):
         self.target = target
 
 
@@ -517,7 +515,7 @@ class Controller:
 
 
     def thread_run(self,update_rate,time_scaling):
-        update_rate = update_rate*time_scaling
+        update_rate = update_rate * time_scaling
         last_update = self.quadcopter.get_time()
         while(self.run==True):
             time.sleep(0)
@@ -539,16 +537,22 @@ class Controller:
 
 class QuadcopterSupervisorEnv(gym.Env):
 
-    bounds_position = (-10, 10)
-    bounds_linear_rate = (-1., 1.)
+    bounds_position = (0, 5.)
+    bounds_linear_rate = (-0.1, 0.1)
     bounds_orientation = (-0.25 * np.pi, 0.25 * np.pi)
     bounds_angular_rate = (-0.025 * np.pi, 0.025 * np.pi)
 
 
-    def __init__(self, ctrl: Controller, dt: float=1e-2, seed=None):
+    def __init__(self, ctrl: Controller, dt: float=1e-2, takeoff=False, seed=None):
         super().__init__()
         self.ctrl = ctrl
-        self.dt = dt
+        self.dt = dt    # simulation interval
+        self.n = 0      # number of steps
+        self.max_n = 1000
+        self.takeoff = takeoff
+        # Error in position afforded by simulation time:
+        #   max free fall velocity in bounds * simulation time
+        self.pos_margin = np.sqrt(2 * 9.81 * np.diff(self.bounds_position)) * dt
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(12,), dtype=np.float32
@@ -559,17 +563,22 @@ class QuadcopterSupervisorEnv(gym.Env):
         )
         self.start_pos = None
         self.random = np.random.RandomState()
-        self.seed(0 if seed is None else seed)
+        self._seed = seed
+        self.seed(self._seed)
 
 
     def seed(self, seed):
         self.random.seed(seed)
+        self.ctrl.quadcopter.random.seed(seed)
 
 
     def reset(self, position=None, linear_rate=None, orientation=None,
               angular_rate=None, target=None):
         # reset quadcopter
-        self.ctrl.quadcopter.__init__(self.ctrl.quadcopter.quad)
+        self.ctrl.quadcopter.reset()
+        self.ctrl.reset()
+        self.n = 0
+
         pos = self.random.rand(3) * np.diff(self.bounds_position) + np.min(self.bounds_position)
         vel = self.random.rand(3) * np.diff(self.bounds_linear_rate) + np.min(self.bounds_linear_rate)
         ori = self.random.rand(3) * np.diff(self.bounds_orientation) + np.min(self.bounds_orientation)
@@ -585,15 +594,16 @@ class QuadcopterSupervisorEnv(gym.Env):
         # Reward calculation variables
         self.start_pos = self.ctrl.quadcopter.state[0:3]
         self.direction = (self.ctrl.target - self.ctrl.quadcopter.state[0:3])
-        self.direction /= np.linalg.norm(self.direction) # unit vector
-        self.radius_core = self.ctrl.quadcopter.quad['r']
-        self.radius_arms = self.ctrl.quadcopter.quad['L']
+        self.direction /= np.linalg.norm(self.direction)   # unit vector
+        self.radius_core = self.ctrl.quadcopter.quad['r']  # center radius
+        self.radius_arms = self.ctrl.quadcopter.quad['L']  # arm length
         return self.state
 
 
     @property
     def state(self):
         state = np.zeros(12, dtype=np.float32)
+        # State encodes relative position of target with respect to quadcopter
         state[0:3] = self.ctrl.target - self.ctrl.quadcopter.state[0:3] # position
         # linear rate [3:6], oriantation [6:9], angular rate [9:12]
         state[3:12] = self.ctrl.quadcopter.state[3:12]
@@ -611,8 +621,17 @@ class QuadcopterSupervisorEnv(gym.Env):
     def position(self):
         return self.ctrl.quadcopter.state[0:3]
 
+    @property
+    def velocity(self):
+        return self.ctrl.quadcopter.state[3:6]
+
+    @property
+    def quadcopter(self):
+        return self.ctrl.quadcopter
+
 
     def step(self, action: np.ndarray):
+        self.n += 1
         # get controller action
         m = self.ctrl.get_control()
         # apply supervisory correction
@@ -620,14 +639,101 @@ class QuadcopterSupervisorEnv(gym.Env):
         # update quadcopter
         self.ctrl.quadcopter.set_motor_speeds(m)
         self.ctrl.quadcopter.update(dt=self.dt)
+        reward, done = self.reward(self.state)
+        return self.state, reward, done, {}
 
 
     def reward(self, state):
-        # vector from a point 'a' on the line from start to target, to some point 'p'
-        # In this case 'a' is the target.
-        ap = state[:3]
-        deviation = np.linalg.norm(np.cross(ap, self.direction))
-        if deviation > self.radius_core:
-            return -0.1
-        elif deviation > self.radius_arms:
-            return -0.2
+        r = -0.1  # time penalty
+        # Vector from quadcopter to target
+        # In this case 't' is the target, and 'q' is the quadcopter
+        qt = state[:3]
+        # If velocity direction is more than 90 degrees from the direction start->target,
+        # end the episode i.e. when the quadcopter is moving away from target
+        # dot = np.dot(qt, self.velocity)
+        # if dot < 0:
+        #     print('AP', qt, '  V', self.velocity)
+        #     print('dot', dot,
+        #           'angle', 180 * np.arccos(dot / (np.linalg.norm(qt) * np.linalg.norm(self.velocity))) / np.pi)
+        #     return -1., True
+
+        # Distance to target: magnitude of direction vector of quad -> target
+        target_dist = np.linalg.norm(qt)
+        if target_dist > 1.5 * self.pos_margin and self.n < self.max_n:
+            # deviation is the shortest distance from the quadcopter to the line
+            # connecting start and end (target) positions
+            deviation = np.linalg.norm(np.cross(qt, self.direction))
+            if deviation > self.radius_arms:
+                return deviation * r + r, False
+            elif deviation <= self.radius_arms:
+                return r, False
+        elif target_dist <= 1.5 * self.pos_margin:
+            return 100. - np.linalg.norm(self.velocity)**2, True
+        elif self.n >= self.max_n:
+            return r, True
+
+
+
+def plot_quadcopter(env: QuadcopterSupervisorEnv, *agents, labels=None, figsize=(8,8),
+                    position=None, linear_rate=None, orientation=None,
+                    angular_rate=None, target=None):
+    predict_fns = []
+    if len(agents) == 0:
+        predict_fns.append(lambda s: (0., 1.))
+    else:
+        for agent in agents:
+            if isinstance(agent, (int, float)):
+                predict_fns.append(_make_agent(agent))
+            else:
+                predict_fns.append(agent.predict)
+    
+    positions, actions, velocities = [], [], []
+    for predict in tqdm(predict_fns, leave=False, desc='Agent #'):
+        pos, act, vel = [], [], []
+        env.seed(env._seed)
+        state = env.reset(position=position, linear_rate=linear_rate,
+                          orientation=orientation, angular_rate=angular_rate)
+        pos.append(env.position)
+        done = False
+        while not done:
+            action = predict(state)[0]
+            state, reward, done, _ = env.step(action)
+            pos.append(env.position)
+            vel.append(env.velocity)
+            act.append(action)
+        positions.append(np.asarray(pos))
+        velocities.append(np.asarray(vel))
+        actions.append(np.asarray(act))
+
+    fig = plt.figure(figsize=figsize, constrained_layout=True)
+    gs = fig.add_gridspec(3, 1)
+    ax = fig.add_subplot(gs[0:2, 0], projection='3d')
+    labels = [str(i) for i in range(len(positions))] if labels is None else labels
+    for label, pos, vel in zip(labels, positions, velocities):
+        ax.plot(pos[:, 0], pos[:, 1], pos[:, 2], label=label)
+        ax.text(*env.start, "start")
+        ax.text(*env.end, "end")
+        ax.quiver(*pos[-1], *vel[-1], color='r')
+    ax.legend()
+
+    ax = fig.add_subplot(gs[2:, 0])
+    for label, pos, act in zip(labels, positions, actions):
+        x = np.arange(len(act))
+        # ax.scatter(x, act[:, 0], marker='.', label=f'm0-{label}')
+        # ax.scatter(x, act[:, 1], marker='.', label=f'm1-{label}')
+        # ax.scatter(x, act[:, 2], marker='.', label=f'm2-{label}')
+        # ax.scatter(x, act[:, 3], marker='.', label=f'm3-{label}')
+
+        ax.plot(pos[:, 0], label=f'{label}-x')
+        ax.plot(pos[:, 1], label=f'{label}-y')
+        ax.plot(pos[:, 2], label=f'{label}-z')
+    ax.legend()
+
+    plt.show()
+
+
+def _make_agent(val):
+    action = np.ones(4) * val
+    def predict(state):
+        return action, 1.
+    return predict
