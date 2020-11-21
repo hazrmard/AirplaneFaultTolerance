@@ -5,7 +5,7 @@ dependencies:
   - python=3.7
   - scikit-learn
   - scipy
-  - matplotlib
+  - matplotlib>=3.3.2
   - numpy
   - pytorch::cpuonly
   - pytorch::pytorch=1.5
