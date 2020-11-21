@@ -40,7 +40,7 @@ class Memory:
 class Policy(nn.Module):
 
     dist = Distribution
-    dist_kwargs = None
+    dist_kwargs = {}
 
 
     def __init__(self, state_dim, action_dim, n_latent_var):
@@ -148,16 +148,17 @@ class ActorCriticBox(Policy):
     dist_kwargs = {}
 
 
-    def __init__(self, state_dim, action_dim, n_latent_var, action_std=0.1):
+    def __init__(self, state_dim, action_dim, n_latent_var, action_std=0.1,
+            activation=nn.Tanh):
         super().__init__(state_dim=state_dim, action_dim=action_dim, n_latent_var=n_latent_var)
-
+        self.activation = activation
         self.action_layer = nn.Sequential(
                 nn.Linear(state_dim, n_latent_var),
                 nn.Tanh(),
                 nn.Linear(n_latent_var, n_latent_var),
                 nn.Tanh(),
                 nn.Linear(n_latent_var, action_dim),
-                nn.Tanh()
+                self.activation()
                 )
         self.dist_kwargs = dict(covariance_matrix=(torch.eye(action_dim) * action_std).to(DEVICE))
 
@@ -173,7 +174,8 @@ class PPO:
 
     def __init__(self, env, policy, state_dim, action_dim, n_latent_var=64, lr=0.02,
                  betas=(0.9, 0.999), gamma=0.99, epochs=5, eps_clip=0.2,
-                 update_interval=2000, seed=None, summary: SummaryWriter=None):
+                 update_interval=2000, seed=None, summary: SummaryWriter=None,
+                 **policy_kwargs):
         self.env = env
         self.lr = lr
         self.betas = betas
@@ -182,7 +184,7 @@ class PPO:
         self.epochs = epochs
         self.update_interval = update_interval
         
-        self.policy = policy(state_dim, action_dim, n_latent_var).to(DEVICE)
+        self.policy = policy(state_dim, action_dim, n_latent_var, **policy_kwargs).to(DEVICE)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr, betas=betas)
         
         self.MseLoss = nn.MSELoss()
@@ -230,9 +232,9 @@ class PPO:
             advantages = rewards - state_values.detach()
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
-            loss = -torch.min(surr1, surr2)
-            loss += 0.5*self.MseLoss(state_values, rewards)
-            # loss -= 0.01*dist_entropy
+            loss = -torch.min(surr1, surr2) # policy loss
+            loss += 0.5 * self.MseLoss(state_values, rewards) # value loss
+            loss -= 0.01 * dist_entropy  # randomness (exploration)
             
             # Take gradient step. If optimizer==None, then just backpropagate
             # gradients.
