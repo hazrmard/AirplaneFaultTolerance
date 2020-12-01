@@ -91,7 +91,7 @@ class Motor:
         if self.fault_mag > 0:
             self.speed = self.speed * (1 - self.fault_mag)
         # From http://www.electricrcaircraftguy.com/2013/09/propeller-static-dynamic-thrust-equation.html
-        self.thrust = 4.392e-8 * self.speed * math.pow(self.dia,3.5)/(math.sqrt(self.pitch))
+        self.thrust = 4.392e-8 * self.speed * math.pow(self.dia, 3.5) / (math.sqrt(self.pitch))
         self.thrust = self.thrust*(4.23e-4 * self.speed * self.pitch)
 
         if self.thrust_unit == 'Kg':
@@ -110,7 +110,7 @@ class Motor:
 class Quadcopter:
     # State space representation: [x y z x_dot y_dot z_dot theta phi gamma theta_dot phi_dot gamma_dot]
     # From Quadcopter Dynamics, Simulation, and Control by Andrew Gibiansky
-    def __init__(self, quad=QUADPARAMS, gravity=9.81, b=0.0245, random=np.random.RandomState()):
+    def __init__(self, quad=QUADPARAMS, gravity=9.81, b=0.0245, turbulence=15, random=np.random.RandomState()):
         # a copy of `quad` so any QUADPARAMS are not changed
         self.quad = deepcopy(quad)
         self.random = random
@@ -122,10 +122,9 @@ class Quadcopter:
         self.wind = True
 
         # Wind disturbance
-        # self.windMag = 0
-        self.airspeed = 15
-        self.nom_wind = np.zeros(3)
-        self.rand_wind = self.generate_wind_turbulence(5)
+        self.nom_wind = np.zeros(3) # constant wind direction
+        self.airspeed = turbulence          # used for turbulent wind generation
+        self.rand_wind = self.generate_wind_turbulence(h=5) * (1 if turbulence > 0 else 0)
 
         # Motors
         self.quad['m1'] = Motor(self.quad['prop_size'][0], self.quad['prop_size'][1])
@@ -258,8 +257,8 @@ class Quadcopter:
 
     def generate_wind_turbulence(self, h):
         # dryden turbulence model
-        height = float(h) * 3.28084
-        airspeed = float(self.airspeed) * 3.28084
+        height = float(h) * 3.28084                 # metres -> feet
+        airspeed = float(self.airspeed) * 3.28084   # metres/s to feet/s
         mean = 0
         std = 1
         # create a sequence of 1000 equally spaced numeric values from 0 - 5
@@ -554,6 +553,7 @@ class QuadcopterSupervisorEnv(gym.Env):
     bounds_linear_rate = (-0.1, 0.1)
     bounds_orientation = (-0.25 * np.pi, 0.25 * np.pi)
     bounds_angular_rate = (-0.025 * np.pi, 0.025 * np.pi)
+    action_domain = (0., 1.)
 
 
     def __init__(self, ctrl: Controller, dt: float=1e-2, seed=None,
@@ -567,6 +567,13 @@ class QuadcopterSupervisorEnv(gym.Env):
         # Error in position afforded by simulation time:
         # = max free fall velocity in bounds * simulation time step
         # self.pos_margin = np.sqrt(2 * 9.81 * np.diff(self.bounds_position)[0]) * dt
+        self.pos_margin = 0.5
+        self.deterministic_reset = deterministic_reset
+        self.random = np.random.RandomState()
+        self._seed = seed
+        self.seed(self._seed)
+        self.radius_core = self.ctrl.quadcopter.quad['r']  # center radius
+        self.radius_arms = self.ctrl.quadcopter.quad['L']  # arm length
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(12,), dtype=np.float32
@@ -575,25 +582,23 @@ class QuadcopterSupervisorEnv(gym.Env):
             low=-np.ones(4, dtype=np.float32),
             high=np.ones(4, dtype=np.float32)
         )
-        self.deterministic_reset = deterministic_reset
-        self.random = np.random.RandomState()
-        self._seed = seed
-        self.seed(self._seed)
-        self.radius_core = self.ctrl.quadcopter.quad['r']  # center radius
-        self.radius_arms = self.ctrl.quadcopter.quad['L']  # arm length
-        self.pos_margin = 1.
+        # These parameters are changed on reset() or at each step()
         self._start_pos = None  # populated when reset() is called
         self.direction = None
         self._total_length = None
         self._reset_params = None
         self._accumulated_reward = 0.
+        self._action_domain_span = None
+        self._action_range_span = None
 
 
     def takeoff(self):
         target = self.ctrl.target
-        self.ctrl.target = self.position
+        self.ctrl.target = self.start
         m = self.ctrl.get_control()
-
+        self.ctrl.quadcopter.set_motor_speeds(m)
+        self.ctrl.quadcopter.update(dt=self.dt)
+        self.ctrl.target = target
 
 
     def seed(self, seed):
@@ -627,6 +632,7 @@ class QuadcopterSupervisorEnv(gym.Env):
             self.seed(self._seed)
             self._reset_params = (position, linear_rate, orientation, angular_rate, target)
 
+        # assigning state
         self.ctrl.quadcopter.state[0:3] = position
         self.ctrl.quadcopter.state[3:6] = linear_rate
         self.ctrl.quadcopter.state[6:9] = orientation
@@ -636,7 +642,14 @@ class QuadcopterSupervisorEnv(gym.Env):
         self._start_pos = self.ctrl.quadcopter.state[0:3]
         self.direction = (self.ctrl.target - self.ctrl.quadcopter.state[0:3])
         self._total_length = np.linalg.norm(self.direction) # start -> target shortest distance
-        self.direction /=  1 if self._total_length==0 else self._total_length               # unit vector
+        self.direction /= 1 if self._total_length==0 else self._total_length  # unit vector
+        # supervisory control parameters
+        self._action_domain_span = self.action_domain[1] - self.action_domain[0]
+        self._action_range_span = self.ctrl.MOTOR_LIMITS[1] - 0.
+        self._action_gradient = self._action_range_span / self._action_domain_span
+
+        if self.simulate_takeoff:
+            self.takeoff()
         return self.state
 
 
@@ -674,16 +687,16 @@ class QuadcopterSupervisorEnv(gym.Env):
         return self.ctrl.quadcopter
 
 
-    def step(self, action: np.ndarray):
+    def step(self, action: np.ndarray=0.):
         self.n += 1
-        # get controller action
+        # Get controller action
         m = self.ctrl.get_control()  # units of motor speed
-        # Apply supervisory correction
-        # Multiplicative
-        # m = m * (1 + action)
-        # Additive
-        # Action is the output of tanh, in range [-1, 1]. Converting to [0, 1]
-        m += (action + 1) * 0.5 * (self.ctrl.MOTOR_LIMITS[1] - self.ctrl.MOTOR_LIMITS[0])
+        # Apply additive supervisory correction
+        # Action is the output of tanh, in range [-1, 1]. Converting to [0, self.ctrl.MOTOR_LIMITS[1]]
+        # y - y1 = m * (x - x1), where (x1, y1) = (0., 0.)
+        action_clipped = np.clip(action, *self.action_domain)
+        action_in_motor_units = self._action_gradient * (action_clipped - self.action_domain[0])
+        m += action_in_motor_units
         # Update quadcopter
         self.ctrl.quadcopter.set_motor_speeds(m)
         self.ctrl.quadcopter.update(dt=self.dt)
@@ -692,7 +705,6 @@ class QuadcopterSupervisorEnv(gym.Env):
 
 
     def reward(self, state):
-        # r = -0.1  # time penalty
         # Vector from quadcopter to target Q -> T
         qt = state[:3]
         # Distance to target: magnitude of direction vector of quad -> target
@@ -707,7 +719,7 @@ class QuadcopterSupervisorEnv(gym.Env):
         end = False
 
         # Condition for keeping the episode continuing:
-        if target_dist > 1.5 * self.pos_margin and self.n < self.max_n:
+        if target_dist > self.pos_margin and self.n < self.max_n:
             if deviation > self.radius_arms:
                 R, end = r * (1 + deviation), False
             elif deviation <= self.radius_arms:
@@ -720,8 +732,8 @@ class QuadcopterSupervisorEnv(gym.Env):
                 print(np.cross(qt, self.direction))
                 print(deviation, self.radius_arms)
                 raise Exception
-        # Situations where episode must end:
-        # - Close enough to the target
+        #Situations where episode must end:
+        #- Close enough to the target
         elif target_dist <= 1.5 * self.pos_margin:
             R, end = -self._accumulated_reward, True
             # R, end = self._total_length / self.n, True
@@ -740,11 +752,13 @@ def plot_quadcopter(env: QuadcopterSupervisorEnv, *agents, labels=None, figsize=
     # All args after *agents must be keyword arguments.
     predict_fns = []
     if len(agents) == 0:
-        predict_fns.append(lambda s: (0., 1.))
+        predict_fns.append(_make_agent(env.action_domain[0]))
     else:
         for agent in agents:
             if isinstance(agent, (int, float)):
                 predict_fns.append(_make_agent(agent))
+            elif agent is None:
+                predict_fns.append(_make_agent(env.action_domain[0]))
             else:
                 predict_fns.append(agent.predict)
     
@@ -770,9 +784,11 @@ def plot_quadcopter(env: QuadcopterSupervisorEnv, *agents, labels=None, figsize=
     gs = fig.add_gridspec(3, 1)
     ax = fig.add_subplot(gs[0:2, 0], projection='3d')
     labels = [str(i) for i in range(len(positions))] if labels is None else labels
+    colors = []
     for label, pos, vel in zip(labels, positions, velocities):
-        ax.plot(pos[::resolution, 0], pos[::resolution, 1], pos[::resolution, 2],
+        lines = ax.plot(pos[::resolution, 0], pos[::resolution, 1], pos[::resolution, 2],
                 label=label, marker='.')
+        colors.append(lines[0].get_color())
         ax.text(*env.start, "start")
         ax.text(*env.end, "end")
         ax.quiver(*pos[-1], *vel[-1], color='r')
@@ -782,12 +798,12 @@ def plot_quadcopter(env: QuadcopterSupervisorEnv, *agents, labels=None, figsize=
     ax.legend()
 
     ax = fig.add_subplot(gs[2:, 0])
-    for label, pos, act in zip(labels, positions, actions):
+    for i, (label, pos, act) in enumerate(zip(labels, positions, actions)):
         x = np.arange(len(act))[::resolution]
-        ax.scatter(x, act[::resolution, 0], marker='.', label=f'm0-{label}')
-        ax.scatter(x, act[::resolution, 1], marker='.', label=f'm1-{label}')
-        ax.scatter(x, act[::resolution, 2], marker='.', label=f'm2-{label}')
-        ax.scatter(x, act[::resolution, 3], marker='.', label=f'm3-{label}')
+        ax.scatter(x, act[::resolution, 0], marker=4, s=15, c=colors[i], label='m0' if i==0 else '')
+        ax.scatter(x, act[::resolution, 1], marker=5, s=15, c=colors[i], label='m1' if i==0 else '')
+        ax.scatter(x, act[::resolution, 2], marker=6, s=15, c=colors[i], label='m2' if i==0 else '')
+        ax.scatter(x, act[::resolution, 3], marker=7, s=15, c=colors[i], label='m3' if i==0 else '')
 
         # ax.plot(pos[::resolution, 0], label=f'{label}-x')
         # ax.plot(pos[::resolution, 1], label=f'{label}-y')
