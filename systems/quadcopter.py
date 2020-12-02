@@ -584,12 +584,12 @@ class QuadcopterSupervisorEnv(gym.Env):
         )
         # These parameters are changed on reset() or at each step()
         self._start_pos = None  # populated when reset() is called
-        self.direction = None
-        self._total_length = None
-        self._reset_params = None
-        self._accumulated_reward = 0.
-        self._action_domain_span = None
-        self._action_range_span = None
+        self.direction = None   # unit vector pointing from start to end
+        self._total_length = None # distance from start to end
+        self._reset_params = None # parameter values when deterministically resetting
+        self._accumulated_reward = 0.   # total reward in episode so far
+        self._action_domain_span = None # domain of actions action space
+        self._action_range_span = None  # the range to which actions are mapped for PID controller
 
 
     def takeoff(self):
@@ -762,9 +762,9 @@ def plot_quadcopter(env: QuadcopterSupervisorEnv, *agents, labels=None, figsize=
             else:
                 predict_fns.append(agent.predict)
     
-    positions, actions, velocities = [], [], []
+    positions, actions, velocities, rewards = [], [], [], []
     for predict in tqdm(predict_fns, leave=False, desc='Agent #'):
-        pos, act, vel = [], [], []
+        pos, act, vel, reward = [], [], [], 0
         env.seed(env._seed)
         state = env.reset(position=position, linear_rate=linear_rate,
                           orientation=orientation, angular_rate=angular_rate)
@@ -776,9 +776,11 @@ def plot_quadcopter(env: QuadcopterSupervisorEnv, *agents, labels=None, figsize=
             pos.append(env.position)
             vel.append(env.velocity)
             act.append(action)
+            reward += reward
         positions.append(np.asarray(pos))
         velocities.append(np.asarray(vel))
         actions.append(np.asarray(act))
+        rewards.append(reward)
 
     fig = plt.figure(figsize=figsize, constrained_layout=True)
     gs = fig.add_gridspec(3, 1)
@@ -789,9 +791,12 @@ def plot_quadcopter(env: QuadcopterSupervisorEnv, *agents, labels=None, figsize=
         lines = ax.plot(pos[::resolution, 0], pos[::resolution, 1], pos[::resolution, 2],
                 label=label, marker='.')
         colors.append(lines[0].get_color())
-        ax.text(*env.start, "start")
-        ax.text(*env.end, "end")
         ax.quiver(*pos[-1], *vel[-1], color='r')
+    ax.text(*env.start, "start")
+    ax.text(*env.end, "end")
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.set_zlabel('z')
     # For equal data-aspect ratio along all dimensions
     ax_lims = np.asarray([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()]) * 1.1
     ax.set_box_aspect(np.ptp(ax_lims, axis=1))
@@ -811,6 +816,7 @@ def plot_quadcopter(env: QuadcopterSupervisorEnv, *agents, labels=None, figsize=
     ax.legend()
 
     plt.show()
+    return positions, velocities, actions, rewards
 
 
 def _make_agent(val):
