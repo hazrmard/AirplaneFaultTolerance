@@ -148,7 +148,7 @@ class ActorCriticBox(Policy):
     dist_kwargs = {}
 
 
-    def __init__(self, state_dim, action_dim, n_latent_var, action_std=0.1,
+    def __init__(self, state_dim, action_dim, n_latent_var, action_std=0.01,
             activation=nn.Tanh):
         super().__init__(state_dim=state_dim, action_dim=action_dim, n_latent_var=n_latent_var)
         self.activation = activation
@@ -165,7 +165,8 @@ class ActorCriticBox(Policy):
 
     def predict(self, state):
         action, log_prob = super().predict(state)
-        return torch.clamp(action, -1., 1.).numpy(), log_prob.item()
+        # return torch.clamp(action, -1., 1.).numpy(), log_prob.item()
+        return action.numpy(), log_prob.item()
 
 
         
