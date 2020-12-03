@@ -13,33 +13,35 @@ np.random.seed(43)
 #                                                                        HELPER FUNCTIONS
 ############################################################################################
 
+
+# --------------------------------------------------------------------------------- get_poly
 def get_poly(curve, pwr=5):
     """
-        @brief: gets the coefficients for a polynomial approximation of given curve
+    @brief: gets the coefficients for a polynomial approximation of given curve
 
-        @input:
-            curve: the curve as an np.array
-            pwr: power of the curve to fit, default=5
+    @input:
+        curve: the curve as an np.array
+        pwr: power of the curve to fit, default=5
 
-        @output:
-            an np.array of length(pwr) representing the coefficients of the curve
+    @output:
+        an np.array of length(pwr) representing the coefficients of the curve
     """
     x_poly = np.arange(0, len(curve))
     y_poly = np.polyfit(x_poly, curve, pwr)
     return y_poly
 
-
+# ------------------------------------------------------------------------ get_battery_curves
 def get_battery_curves(soc_ocv_file, R0_degradation_file, Q_degradation_file):
     """
-        @brief: gets the degradation profile (predefined curves) for the battery
+    @brief: gets the degradation profile (predefined curves) for the battery
 
-        @input:
-            soc_ocv_file: a csv file containing the soc_ocv relationship as a column vector
-            R0_degradation_file: a csv file containing the R0 degradation curve as a column vector
-            Q_degradation_file: a csv file containing the Q degradation curve as a column vector
+    @input:
+        soc_ocv_file: a csv file containing the soc_ocv relationship as a column vector
+        R0_degradation_file: a csv file containing the R0 degradation curve as a column vector
+        Q_degradation_file: a csv file containing the Q degradation curve as a column vector
 
-        @output:
-            a dictionary mapping of degradation curve coefficients with ["z_coef", "r0_coef", "q_coef", "EOL"] keys
+    @output:
+        a dictionary mapping of degradation curve coefficients with ["z_coef", "r0_coef", "q_coef", "EOL", "soc_ocv"] keys
     """
     soc_ocv = []
     R0_degradation = []
@@ -65,37 +67,31 @@ def get_battery_curves(soc_ocv_file, R0_degradation_file, Q_degradation_file):
     return {"z_coef": z_coef, "r0_coef": r0_coef, "q_coef": q_coef, "eol": eol, "soc_ocv": soc_ocv}
 
 
-def three_plot(title="title",
-               figsize=(12, 4),
+# ------------------------------------------------------------------------------- three_plot
+def three_plot(title="title", figsize=(12, 4),
                plot1=np.array(([[1, 2, 3], [1, 1, 1]])),
                plot2=np.array(([[1, 2, 3], [2, 2, 2], [1, 2, 3], [2.3, 2.4, 2.5]])),
                plot3=np.array(([[1, 2, 3], [3, 3, 3], [4, 5, 6], [4, 4, 4], [1.4, 1.8, 2.2, 2.6, 3.0],
                                 [3, 3.05, 3.15, 3.3, 3.55]])),
-               label1=["label1"],
-               label2=["label2a", "label2b"],
-               label3=["label3-1", "label3-2", "label3-3"],
-               title1="title1",
-               title2="title2",
-               title3="title3",
-               axes1=["x-axis1", "y-axis1"],
-               axes2=["x-axis2", "y-axis2"],
-               axes3=["x-axis3", "y-axis3"],
-               invert=[0,0,0],
-               save=False,
-               filename=""):
+               label1=["label1"], label2=["label2a", "label2b"], label3=["label3-1", "label3-2", "label3-3"],
+               title1="title1", title2="title2", title3="title3",
+               axes1=["x-axis1", "y-axis1"], axes2=["x-axis2", "y-axis2"], axes3=["x-axis3", "y-axis3"],
+               invert=[0,0,0], save=False, filename=""):
     """
-        @brief: creates a 3 subplot figure.
+    @brief: creates a 3 subplot figure.
 
-        @input:
-              title: super title
-              figsize: figuresize
-              plot1/2/3: an np.ndarray of X, Y pairs where X and Y are vectors. ex np.array(([X1, Y1, X2, Y2, ... Xn, Yn]))
-              label1/2/3: a list of labels for each plot
-              title1/2/3: subplot titles
-              axes1/2/3: x and y axes labels for each subplot
-              invert: a 3,1 list where 0 is no x axis invert and 1 is invert, ex [0,0,1] inverts the 3rd axis
-              save: bool flag to save the file
-              filename: filename for saving
+    @input:
+        title: super title
+        figsize: figuresize
+        plot1/2/3: an np.ndarray of X, Y pairs where X and Y are vectors. ex np.array(([X1, Y1, X2, Y2, ... Xn, Yn]))
+        label1/2/3: a list of labels for each plot
+        title1/2/3: subplot titles
+        axes1/2/3: x and y axes labels for each subplot
+        invert: a 3,1 list where 0 is no x axis invert and 1 is invert, ex [0,0,1] inverts the 3rd axis
+        save: bool flag to save the file
+        filename: filename for saving
+
+    @output: none
     """
     np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
     f, (ax1, ax2, ax3) = plt.subplots(1, 3, sharey=False, figsize=(12, 4))
@@ -129,6 +125,89 @@ def three_plot(title="title",
     if (save):
         assert len(filename) > 3, "please specify a filename"
         f.savefig(filename)
+
+
+# ----------------------------------------------------------------------------------- cycle_test
+def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
+               dt=1.0, save_plot=False, file_name="", run_num=0, q_vals=[], t_vals=[]):
+    """
+    @brief:
+
+    @input:
+        cell: a continuous battery cell
+        random_load: boolean, whether to use a random load or constant current
+        verbose: 0 = none, 1 = end of cycle information, 2 = even more info
+        show_plot: boolean to show or not show plot
+        dt: sample time, sets the cells period
+        save_plot: boolean to save the plot
+        file_name: filename of plot
+        run_num: run number of the cycle
+        q_vals: list of q vals to save at the end of each cycle
+        t_vals: list of cycle_time vals to save at the end of each cycle
+
+    @output: none
+    """
+    cell.period = dt
+    ct = 1/3600*cell.period
+    dt = cell.nsteps(ct)
+    # data holders for current, soc, noisy soc, filtered soc, voltage
+    cs, cz, cn, cf, cv, vn, vf = [], [], [], [], [], [], []
+    # random current profile for a given run
+    if(random_load):
+        x = np.linspace(0, 2 * np.pi, int(cell.z * 100) + 1)
+        amp = np.random.uniform(1,2)
+        pwr = np.random.uniform(.8, 1.4)
+        fct = np.random.uniform(3,5)
+        ofs = np.random.uniform(3,5)
+        y = np.sin(amp*-x**pwr)/fct+ofs
+    done = False
+    i = 0
+    while(not done):
+        if random_load:
+            c = np.random.normal(y[int(cell.z * 100)], .1)
+        else:
+            c = 3.8695
+        obs, reward, done, info = cell.step(dt, c)
+        cs.append(c)
+        cz.append(cell.z)
+        cn.append(obs[0])
+        cf.append(obs[1])
+        vn.append(obs[2])
+        vf.append(obs[3])
+        cv.append(cell.ocv)
+        if(verbose==2):
+            if(i == 0):
+                print("first 20 observations:")
+            if(i < 20):
+                print("noisy_z: {:.3f}\tfiltered_z: {:.3f}\tnoisy_v: {:.3f}\tfiltered_v: {:.3f}".format(obs[0], obs[1], obs[2], obs[3]))
+        i += 1
+    q_vals.append(cell.Q)
+    t_vals.append(int(cell.cycle_time))
+    if(verbose==2):
+        print("elapsed seconds: {:.2f}".format(int(i * cell.period)))
+        print("ending soc: {:.4f}".format(cell.z))
+        print("cycle time: {:.2f}".format(cell.cycle_time))
+    if(verbose > 0):
+        print("run: {}\tQ: {:.4f}\tavg_load: {:.4f}\tcycle_time: {}\tage: {:.4f}\teol: {}".format(run_num, cell.Q, cell.avg_load, int(cell.cycle_time), cell.age, int(cell.eol)))
+    if(show_plot):
+        factor = 1 / 60 * cell.period
+        X = np.arange(0, i)*factor
+        three_plot(title="Continuous Battery Cell Discharge Plots", figsize=(12,4),
+                   plot1=np.array([X, np.array(cs)]),
+                   plot2=np.array([X, vn, X, vf, X, cv]),
+                   plot3=np.array([X[0:80], cn[0:80],X[0:80], cf[0:80],X[0:80], cz[0:80]], dtype=object),
+                   label1=["current profile"],
+                   label2=["observed voltage", "filtered voltage", "actual voltage"],
+                   label3=["observed soc", "filtered soc", "actual soc"],
+                   title1="Current Draw",
+                   title2="Open Circuit Voltage",
+                   title3="State of Charge",
+                   axes1=['time (minutes)', 'current (A)'],
+                   axes2=['time (minutes)', 'ocv (V)'],
+                   axes3=['time (minutes)', 'soc (%)'],
+                   save=save_plot,
+                   filename=file_name)
+    cell.reset()
 
 
 
@@ -177,6 +256,9 @@ class Battery:
         self.h = 0
 
 
+############################################################################################
+#                                                                  CONTINUOUS BATTERY CLASS
+############################################################################################
 class ContinuousBatteryCell(Battery, gym.Env):
     def __init__(self, *args, **kwargs):
         super(ContinuousBatteryCell, self).__init__(*args, **kwargs)
@@ -185,13 +267,15 @@ class ContinuousBatteryCell(Battery, gym.Env):
         self.filter_len = 25
         self.filter = lambda X: np.sum(X) / self.filter_len
 
-        # accumulator and index for moving average filter
-        self.accum = np.zeros((self.filter_len,))
+        # accumulator and index for moving average filters
+        self.accum_z = np.zeros((self.filter_len,))
+        self.accum_v = np.zeros((self.filter_len,))
         self.idx = 0
 
         # obs[0] = noisy observation of soc, obs[1] = filtered observation of soc
-        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(2,))
-        self.state = [100.0, 100.0]
+        # obs[2] = noisy observation of ocv, obs[3] = filtered observation of ocv
+        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(4,))
+        self.state = [self.z, self.z, self.v0, self.v0]
 
         # 0 for charging, 1 for discharging, not implemented yet
         self.action_space = gym.spaces.Discrete(2)  # charging or discharging
@@ -233,7 +317,7 @@ class ContinuousBatteryCell(Battery, gym.Env):
         return np.polyval(self.q_coef, age)[0]
 
     def _cumulative_avg(self, current):
-        """calculates the cumulative average current load"""
+        """calculates the cumulative average current load in a given cycle"""
         self.avg_load = (current + self.count*self.avg_load)/(self.count + 1)
         self.count += 1
 
@@ -247,11 +331,10 @@ class ContinuousBatteryCell(Battery, gym.Env):
 
     def _dhdt(self, h, t, current):
         """first order de for the hysteresis value"""
-        return -np.absolute(
-            self.n * current * self.G / self.Q) * h + self.n * current * self.G / self.Q * self.M * np.sign(current)
+        return -np.absolute(self.n * current * self.G / self.Q) * h + self.n * current * self.G / self.Q * self.M * np.sign(current)
 
     def step(self, dt, current):
-        """steps the ode solver, noisy and filtered voltages"""
+        """steps the ode solver, noisy_z and filtered_z voltages"""
         _z = (1 - odeint(self._dzdt, 1.0, dt, args=(current,))[-1][0])
         _i = odeint(self._didt, self.Ir, dt, args=(current,))[-1][0]
         _h = odeint(self._dhdt, self.h, dt, args=(current,))[-1][0]
@@ -262,23 +345,33 @@ class ContinuousBatteryCell(Battery, gym.Env):
         self.h = _h
         self.ocv = np.polyval(self.z_coef, self.z * 100.0) - self.R * self.Ir - self.R0 * current + self.h + self.M0 * np.sign(current)
 
-        # noisy observation
-        noisy = np.clip(np.random.normal(self.z, .01), 0.0, 100.0)
+        # noisy observations
+        noisy_z = np.clip(np.random.normal(self.z, .01), 0.0, 100.0)
+        noisy_v = np.clip(np.random.normal(self.ocv, .025), -.5, 5.0)[0]
 
-        # update accumulator for the filter
-        if (self.accum[-1] == 0):
-            self.accum = np.ones((self.filter_len,)) * noisy
+        # update accumulator for filtered_z
+        if (self.accum_z[-1] == 0):
+            self.accum_z = np.ones((self.filter_len,)) * noisy_z
         else:
-            self.accum[self.idx] = noisy
+            self.accum_z[self.idx] = noisy_z
+
+        # update accumulator for filtered_v
+        if (self.accum_v[-1] == 0):
+            self.accum_v = np.ones((self.filter_len,)) * noisy_v
+        else:
+            self.accum_v[self.idx] = noisy_v
+
+        # update accumulator counter
         self.idx += 1
         if (self.idx == self.filter_len):
             self.idx = 0
 
-        # filtered observation
-        filtered = np.clip(self.filter(self.accum), 0.0, 100.0)
+        # filtered_z observation
+        filtered_z = np.clip(self.filter(self.accum_z), 0.0, 100.00000)
+        filtered_v = np.clip(self.filter(self.accum_v), -.5, 5.00000)
 
-        # update the state [noisy soc, filtered soc]
-        self.state = [noisy, filtered]
+        # update the state [noisy_z soc, filtered_z soc]
+        self.state = [noisy_z, filtered_z, noisy_v, filtered_v]
 
         # living reward
         reward = -.01
@@ -301,8 +394,9 @@ class ContinuousBatteryCell(Battery, gym.Env):
     def reset(self):
         """resets the battery"""
         super().reset()
-        self.state = [self.z, self.z]
-        self.accum = np.zeros((self.filter_len,))
+        self.state = [self.z, self.z, self.v0, self.v0]
+        self.accum_z = np.zeros((self.filter_len,))
+        self.accum_v = np.zeros((self.filter_len,))
         self.idx = 0
         self.cycle_time = 0.0
         self.avg_load = 0.0
