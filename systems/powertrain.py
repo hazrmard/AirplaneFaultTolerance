@@ -129,7 +129,8 @@ def three_plot(title="title", figsize=(12, 4),
 
 # ----------------------------------------------------------------------------------- cycle_test
 def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
-               dt=1.0, save_plot=False, file_name="", run_num=0, q_vals=[], t_vals=[]):
+               dt=1.0, save_plot=False, reset=True, file_name="",
+               run_num=0, q_vals=[], t_vals=[], action=1):
     """
     @brief:
 
@@ -140,10 +141,12 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
         show_plot: boolean to show or not show plot
         dt: sample time, sets the cells period
         save_plot: boolean to save the plot
+        reset: reset the battery or not, to be removed
         file_name: filename of plot
         run_num: run number of the cycle
         q_vals: list of q vals to save at the end of each cycle
         t_vals: list of cycle_time vals to save at the end of each cycle
+        action: 0=charge, 1=discharge
 
     @output: none
     """
@@ -167,6 +170,8 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
             c = np.random.normal(y[int(cell.z * 100)], .1)
         else:
             c = 3.8695
+        if(action == 0):
+            c = -c
         obs, reward, done, info = cell.step(dt, c)
         cs.append(c)
         cz.append(cell.z)
@@ -188,11 +193,11 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
         print("ending soc: {:.4f}".format(cell.z))
         print("cycle time: {:.2f}".format(cell.cycle_time))
     if(verbose > 0):
-        print("run: {}\tQ: {:.4f}\tavg_load: {:.4f}\tcycle_time: {}\tage: {:.4f}\teol: {}".format(run_num, cell.Q, cell.avg_load, int(cell.cycle_time), cell.age, int(cell.eol)))
+        print("run: {}\tQ: {:.3f}\tR0: {:.3f}\tavg_load: {:.3f}\tcycle_time: {}\tage: {:.3f}\teol: {}".format(run_num, cell.Q, cell.R0, cell.avg_load, int(cell.cycle_time), cell.age, int(cell.eol)))
     if(show_plot):
         factor = 1 / 60 * cell.period
         X = np.arange(0, i)*factor
-        three_plot(title="Continuous Battery Cell Discharge Plots", figsize=(12,4),
+        three_plot(title="Continuous Battery Cell Plots", figsize=(12,4),
                    plot1=np.array([X, np.array(cs)]),
                    plot2=np.array([X, vn, X, vf, X, cv]),
                    plot3=np.array([X[0:80], cn[0:80],X[0:80], cf[0:80],X[0:80], cz[0:80]], dtype=object),
@@ -207,7 +212,8 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
                    axes3=['time (minutes)', 'soc (%)'],
                    save=save_plot,
                    filename=file_name)
-    cell.reset()
+    if(reset):
+        cell.reset()
 
 
 
@@ -227,13 +233,14 @@ class Battery:
             self.z_coef = kwargs["z_coef"]
             self.r0_coef = kwargs["r0_coef"]
             self.q_coef = kwargs["q_coef"]
-            self.eol = kwargs["eol"]
+            self.eol = kwargs["eol"] * 1.1
         self.z = 1.0
         self.Ir = 0
         self.h = 0
         self.M0 = .0019
         self.M = .0092
         self.R0 = .0112
+        self.R0_init = self.R0
         self.R = 2.83e-4
         self.Q = 3.8695
         self.n = .9987
@@ -260,6 +267,18 @@ class Battery:
 #                                                                  CONTINUOUS BATTERY CLASS
 ############################################################################################
 class ContinuousBatteryCell(Battery, gym.Env):
+    """
+    @brief: implements continuous time 3 parameter battery cell with load-dependant degradation,
+            noisy observations and moving average filters
+
+    @params:
+        observation_space: [noisy soc, filtered soc, noisy ocv, filtered ocv]
+        action_space: [0/1] for charging / discharging
+
+    @todo:
+        1) implement RUL estimation
+        2) implement charging / discharging
+    """
     def __init__(self, *args, **kwargs):
         super(ContinuousBatteryCell, self).__init__(*args, **kwargs)
 
@@ -376,8 +395,11 @@ class ContinuousBatteryCell(Battery, gym.Env):
         # living reward
         reward = -.01
 
-        # never truly reach eod, always slightly above
-        done = True if self.ocv <= self.eod + .1 else False
+        # never truly reach eod, always slightly above when discharging
+        if(current > 0):
+            done = True if self.ocv <= self.eod + .1 else False
+        else:  # charging
+            done = True if self.z >= .995 else False
 
         # update current cycle time
         self.cycle_time += self.period
@@ -402,3 +424,33 @@ class ContinuousBatteryCell(Battery, gym.Env):
         self.avg_load = 0.0
         self.count = 0
         self.Q = self.get_q(self.age)
+        self.R0 = np.clip(self.get_r0(self.age), self.R0_init, .5)
+
+
+############################################################################################
+#                                      DISCRETE BATTERY CLASS (depreciated, historical only)
+############################################################################################
+class DiscreteBatteryCell(Battery):
+    def __init__(self, *args, **kwargs):
+        super(DiscreteBatteryCell, self).__init__(*args, **kwargs)
+        self.soc_ocv = kwargs['soc_ocv']
+
+    def get_ocv(self):
+        if (self.z < 0.0):
+            self.z = 0
+        elif (self.z > 1.0):
+            self.z = 1.0
+        idx = int(np.ceil(self.z * 100))
+        if (idx > 101):
+            idx = 101
+        elif (idx < 1):
+            idx = 1
+        return self.soc_ocv[idx]
+
+    def step(self, dt, current):
+        RC = np.exp(-dt / abs(self.RC))
+        H = np.exp(-abs(self.n * current * self.G * dt / (3600 * self.Q)))
+        self.Ir = RC * self.Ir + (1 - RC) * current
+        self.h = H * self.h + (H - 1) * np.sign(current)
+        self.z = self.z - self.n * current / 3600 / self.Q
+        self.ocv = self.get_ocv() + self.M * self.h + self.M0 * np.sign(current) - self.R * self.Ir - self.R0 * current
