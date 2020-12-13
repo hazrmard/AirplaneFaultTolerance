@@ -1,5 +1,3 @@
-from abc import ABC
-
 from scipy.integrate import odeint
 import numpy as np
 import pandas as pd
@@ -132,7 +130,7 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
                dt=1.0, save_plot=False, reset=True, file_name="",
                run_num=0, q_vals=[], t_vals=[], action=1):
     """
-    @brief:
+    @brief: cycles a battery once, accomadates chargning/discharging, random or steady loads
 
     @input:
         cell: a continuous battery cell
@@ -335,11 +333,6 @@ class ContinuousBatteryCell(Battery, gym.Env):
         assert 0.0 <= age <= self.eol, "age in range [0.0, {}]".format(self.eol)
         return np.polyval(self.q_coef, age)[0]
 
-    def _cumulative_avg(self, current):
-        """calculates the cumulative average current load in a given cycle"""
-        self.avg_load = (current + self.count*self.avg_load)/(self.count + 1)
-        self.count += 1
-
     def _dzdt(self, soc, t, current):
         """first order de for state of charge"""
         return -self.n * current / self.Q
@@ -404,8 +397,9 @@ class ContinuousBatteryCell(Battery, gym.Env):
         # update current cycle time
         self.cycle_time += self.period
 
-        # update cumulateive average
-        self._cumulative_avg(current)
+        # update cumulative average
+        self.avg_load = (current + self.count * self.avg_load) / (self.count + 1)
+        self.count += 1
 
         if(done):
             self.age += self.avg_load/self.cycle_time * 850
