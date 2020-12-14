@@ -297,7 +297,6 @@ class ContinuousBatteryCell(Battery, gym.Env):
 
     @todo:
         1) implement RUL estimation
-        2) implement charging / discharging
     """
     def __init__(self, *args, **kwargs):
         super(ContinuousBatteryCell, self).__init__(*args, **kwargs)
@@ -354,8 +353,8 @@ class ContinuousBatteryCell(Battery, gym.Env):
             self.avg_load = 0.0
             self.count = 0
 
-        self.charging_age_factor = 100
-        self.discharging_age_factor = 750
+        self.charging_age_factor = .002
+        self.discharging_age_factor = .005
         self.total_load = 0.0
         self.seed(self._seed)
         self.cycle_flag = False
@@ -478,19 +477,15 @@ class ContinuousBatteryCell(Battery, gym.Env):
             self.avg_load = (abs(current) + self.count * self.avg_load) / (self.count + 1)
             self.count += 1
 
+            if (current > 0):  # discharging
+                self.age += self.avg_load / self.cycle_time * self.discharging_age_factor
+            else:  # charging, assume some amount of degradation occurs
+                self.age += self.avg_load / self.cycle_time * self.charging_age_factor
+            self.age = np.clip(self.age, 0.0, self.eol)
+
         # living reward
         reward = -.01
         self.total_load += abs(current * self.period / 3600)
-
-        if(done):
-            print(self.total_load)
-            if(self.cycle_time > 0):
-                if(current > 0): # discharging
-                    self.age += self.avg_load/self.cycle_time * self.discharging_age_factor
-                else: # charging, assume some amount of degradation occurs
-                    self.age += self.avg_load/self.cycle_time * self.charging_age_factor
-                self.age = np.clip(self.age,  0.0, self.eol)
-
 
         # call reset_cycle externally
         return self.state, reward, done, locals()
