@@ -133,7 +133,7 @@ def three_plot(title="title", figsize=(12, 4),
 # ----------------------------------------------------------------------------------- cycle_test
 def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
                dt=1.0, save_plot=False, reset=True, file_name="",
-               run_num=0, q_vals=[], t_vals=[], action=1):
+               run_num=0, q_vals=[], t_vals=[], action=1, c=3.8695):
     """
     @brief: cycles a battery once, accomadates chargning/discharging, random or steady loads
 
@@ -171,10 +171,8 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
     while(not done):
         if random_load:
             c = np.random.normal(y[int(cell.z * 100)], .1)
-        else:
-            c = 3.8695
         if(action == 0):
-            c = -c
+            c = -abs(c)
         obs, reward, done, info = cell.step(dt, c)
         cs.append(c)
         cz.append(cell.z)
@@ -215,8 +213,10 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
                    axes3=['time (minutes)', 'soc (%)'],
                    save=save_plot,
                    filename=file_name)
-    if(reset):
+    if(reset): # i.e. the cell doesn't need charged back up
         cell.reset()
+    else: # the cell needs charged before it can discharge, but degradation still occurs
+        cell.reset_cycle()
 
 
 
@@ -354,7 +354,11 @@ class ContinuousBatteryCell(Battery, gym.Env):
             self.avg_load = 0.0
             self.count = 0
 
+        self.charging_age_factor = 100
+        self.discharging_age_factor = 750
+        self.total_load = 0.0
         self.seed(self._seed)
+        self.cycle_flag = False
 
 
     def save_state(self, filename=""):
@@ -416,46 +420,6 @@ class ContinuousBatteryCell(Battery, gym.Env):
 
     def step(self, dt, current):
         """steps the ode solver, noisy_z and filtered_z voltages"""
-        _z = (1 - odeint(self._dzdt, 1.0, dt, args=(current,))[-1][0])
-        _i = odeint(self._didt, self.Ir, dt, args=(current,))[-1][0]
-        _h = odeint(self._dhdt, self.h, dt, args=(current,))[-1][0]
-
-        # update the battery parameters
-        self.Ir = _i
-        self.z = self.z - _z
-        self.h = _h
-        self.ocv = np.polyval(self.z_coef, self.z * 100.0) - self.R * self.Ir - self.R0 * current + self.h + self.M0 * np.sign(current)
-
-        # noisy observations
-        noisy_z = np.clip(np.random.normal(self.z, .01), 0.0, 100.0)
-        noisy_v = np.clip(np.random.normal(self.ocv, .025), -.5, 5.0)
-
-        # update accumulator for filtered_z
-        if (self.accum_z[-1] == 0):
-            self.accum_z = np.ones((self.filter_len,)) * noisy_z
-        else:
-            self.accum_z[self.idx] = noisy_z
-
-        # update accumulator for filtered_v
-        if (self.accum_v[-1] == 0):
-            self.accum_v = np.ones((self.filter_len,)) * noisy_v
-        else:
-            self.accum_v[self.idx] = noisy_v
-
-        # update accumulator counter
-        self.idx += 1
-        if (self.idx == self.filter_len):
-            self.idx = 0
-
-        # filtered_z observation
-        filtered_z = np.clip(self.filter(self.accum_z), 0.0, 100.00000)
-        filtered_v = np.clip(self.filter(self.accum_v), -.5, 5.00000)
-
-        # update the state [noisy_z soc, filtered_z soc]
-        self.state = [noisy_z, filtered_z, noisy_v, filtered_v]
-
-        # living reward
-        reward = -.01
 
         # never truly reach eod, always slightly above when discharging
         if(current > 0):
@@ -463,23 +427,77 @@ class ContinuousBatteryCell(Battery, gym.Env):
         else:  # charging
             done = True if self.z >= .995 else False
 
-        # update current cycle time
-        self.cycle_time += self.period
+        if(self.cycle_flag):
+            done = True
+            self.cycle_flag = False
 
-        # update cumulative average
-        self.avg_load = (current + self.count * self.avg_load) / (self.count + 1)
-        self.count += 1
+        if not done:
+
+            _z = (1 - odeint(self._dzdt, 1.0, dt, args=(current,))[-1][0])
+            _i = odeint(self._didt, self.Ir, dt, args=(current,))[-1][0]
+            _h = odeint(self._dhdt, self.h, dt, args=(current,))[-1][0]
+
+            # update the battery parameters
+            self.Ir = _i
+            self.z = self.z - _z
+            self.h = _h
+            self.ocv = np.polyval(self.z_coef, self.z * 100.0) - self.R * self.Ir - self.R0 * current + self.h + self.M0 * np.sign(current)
+
+            # noisy observations
+            noisy_z = np.clip(np.random.normal(self.z, .01), 0.0, 100.0)
+            noisy_v = np.clip(np.random.normal(self.ocv, .025), -.5, 5.0)
+
+            # update accumulator for filtered_z
+            if (self.accum_z[-1] == 0):
+                self.accum_z = np.ones((self.filter_len,)) * noisy_z
+            else:
+                self.accum_z[self.idx] = noisy_z
+
+            # update accumulator for filtered_v
+            if (self.accum_v[-1] == 0):
+                self.accum_v = np.ones((self.filter_len,)) * noisy_v
+            else:
+                self.accum_v[self.idx] = noisy_v
+
+            # update accumulator counter
+            self.idx += 1
+            if (self.idx == self.filter_len):
+                self.idx = 0
+
+            # filtered_z observation
+            filtered_z = np.clip(self.filter(self.accum_z), 0.0, 100.00000)
+            filtered_v = np.clip(self.filter(self.accum_v), -.5, 5.00000)
+
+            # update the state [noisy_z soc, filtered_z soc]
+            self.state = [noisy_z, filtered_z, noisy_v, filtered_v]
+
+            # update current cycle time
+            self.cycle_time += self.period
+
+            # update cumulative average
+            self.avg_load = (abs(current) + self.count * self.avg_load) / (self.count + 1)
+            self.count += 1
+
+        # living reward
+        reward = -.01
+        self.total_load += abs(current * self.period / 3600)
 
         if(done):
-            self.age += self.avg_load/self.cycle_time * 850
-            self.age = np.clip(self.age,  0.0, self.eol)
+            print(self.total_load)
+            if(self.cycle_time > 0):
+                if(current > 0): # discharging
+                    self.age += self.avg_load/self.cycle_time * self.discharging_age_factor
+                else: # charging, assume some amount of degradation occurs
+                    self.age += self.avg_load/self.cycle_time * self.charging_age_factor
+                self.age = np.clip(self.age,  0.0, self.eol)
 
+
+        # call reset_cycle externally
         return self.state, reward, done, locals()
 
-    def reset(self):
-        """resets the battery"""
-        super().reset()
-        self.state = [self.z, self.z, self.v0, self.v0]
+
+    def reset_cycle(self):
+        """resets after single charge / discharge cycle"""
         self.accum_z = np.zeros((self.filter_len,))
         self.accum_v = np.zeros((self.filter_len,))
         self.idx = 0
@@ -488,6 +506,13 @@ class ContinuousBatteryCell(Battery, gym.Env):
         self.count = 0
         self.Q = self.get_q(self.age)
         self.R0 = np.clip(self.get_r0(self.age), self.R0_init, .5)
+        self.total_load = 0.0
+
+    def reset(self):
+        """resets the battery"""
+        super().reset()
+        self.state = [self.z, self.z, self.v0, self.v0]
+        self.reset_cycle()
 
 
 ############################################################################################
