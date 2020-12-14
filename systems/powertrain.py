@@ -4,6 +4,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import csv
 import gym
+import json
+import datetime
+import os
 np.random.seed(43)
 
 
@@ -60,9 +63,11 @@ def get_battery_curves(soc_ocv_file, R0_degradation_file, Q_degradation_file):
     z_coef = get_poly(soc_ocv)
     r0_coef = get_poly(R0_degradation)
     q_coef = get_poly(Q_degradation)
-    eol = len(Q_degradation)
+    eol = max(len(Q_degradation), len(R0_degradation))
 
-    return {"z_coef": z_coef, "r0_coef": r0_coef, "q_coef": q_coef, "eol": eol, "soc_ocv": soc_ocv}
+    return {"z_coef": z_coef[:,0].tolist(), "r0_coef": r0_coef[:,0].tolist(), "q_coef": q_coef[:,0].tolist(), "eol": eol}
+    #return {"z_coef": z_coef, "r0_coef": r0_coef, "q_coef": q_coef, "eol": eol, "soc_ocv": soc_ocv}
+    #return {"z_coef": list(z_coef), "r0_coef": list(r0_coef), "q_coef": list(q_coef), "eol": eol}
 
 
 # ------------------------------------------------------------------------------- three_plot
@@ -215,41 +220,55 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
 
 
 
-
 ############################################################################################
 #                                                                        BASE BATTERY CLASS
 ############################################################################################
+
 class Battery:
     def __init__(self, *args, **kwargs):
         if (len(kwargs) == 0):
+            self.name = "base_battery"
             self.z_coef = np.zeros((1, 1))
             self.r0_coef = np.zeros((1, 1))
             self.q_coef = np.zeros((1, 1))
-            self.eod = 1
-            self.eol = 1
+            self.eol = 320
+            self.z = 1.0
+            self.Ir = 0
+            self.h = 0
+            self.M0 = .0019
+            self.M = .0092
+            self.R0 = .0112
+            self.R0_init = self.R0
+            self.R = 2.83e-4
+            self.Q = 3.8695
+            self.n = .9987
+            self.G = 163.4413
+            self.v0 = 4.2
+            self.eod = 3.04
+            self.RC = 3.6572
+            self.ocv = self.v0
         else:
+            print(f"Using [ {kwargs['name']} - {kwargs['modified']}] parameters")
+            self.name = kwargs['name']
             self.z_coef = kwargs["z_coef"]
             self.r0_coef = kwargs["r0_coef"]
             self.q_coef = kwargs["q_coef"]
-            self.eol = kwargs["eol"] * 1.1
-        self.z = 1.0
-        self.Ir = 0
-        self.h = 0
-        self.M0 = .0019
-        self.M = .0092
-        self.R0 = .0112
-        self.R0_init = self.R0
-        self.R = 2.83e-4
-        self.Q = 3.8695
-        self.n = .9987
-        self.G = 163.4413
-        self.v0 = 4.2
-        self.eod = 3.04
-        self.RC = 3.6572
-        self.ocv = self.v0
-
-    def get_ocv(self):
-        raise NotImplementedError
+            self.eol = kwargs["eol"]
+            self.z = kwargs["z"]
+            self.Ir = kwargs["Ir"]
+            self.h = kwargs["h"]
+            self.M0 = kwargs["M0"]
+            self.M = kwargs["M"]
+            self.R0 = kwargs["R0"]
+            self.R = kwargs["R"]
+            self.Q = kwargs["Q"]
+            self.n = kwargs["n"]
+            self.G = kwargs["G"]
+            self.v0 = kwargs["v0"]
+            self.eod = kwargs["eod"]
+            self.RC = kwargs["RC"]
+            self.R0_init = self.R0
+            self.ocv = self.v0
 
     def step(self, dt, current):
         raise NotImplementedError
@@ -262,8 +281,11 @@ class Battery:
 
 
 ############################################################################################
-#                                                                  CONTINUOUS BATTERY CLASS
+#                                                                 CONTINUOUS BATTERY CLASS
 ############################################################################################
+
+
+
 class ContinuousBatteryCell(Battery, gym.Env):
     """
     @brief: implements continuous time 3 parameter battery cell with load-dependant degradation,
@@ -281,37 +303,84 @@ class ContinuousBatteryCell(Battery, gym.Env):
         super(ContinuousBatteryCell, self).__init__(*args, **kwargs)
 
         # simple moving average filter
-        self.filter_len = 25
         self.filter = lambda X: np.sum(X) / self.filter_len
-
-        # accumulator and index for moving average filters
-        self.accum_z = np.zeros((self.filter_len,))
-        self.accum_v = np.zeros((self.filter_len,))
-        self.idx = 0
 
         # obs[0] = noisy observation of soc, obs[1] = filtered observation of soc
         # obs[2] = noisy observation of ocv, obs[3] = filtered observation of ocv
         self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(4,))
-        self.state = [self.z, self.z, self.v0, self.v0]
 
-        # 0 for charging, 1 for discharging, not implemented yet
-        self.action_space = gym.spaces.Discrete(2)  # charging or discharging
+        # - for charging, + for discharging, not implemented yet
+        self.action_space = gym.spaces.Box(low=-100.0, high = 100.0, shape=(1,))
 
         # used for ode solver
         self.nsteps = lambda x: np.linspace(0, x, 100)
-        self.period = .05
 
-        # random seed to aid reproduction
-        self._seed = 43
+        # assume the other keys are there too
+        if "state" in kwargs.keys():
+            #noisy z, filtered z, noisy v, filtered v
+            self.state = kwargs['state']
+
+            # simple moving average filter
+            self.filter_len = kwargs["filter_len"]
+
+            # accumulator and index for moving average filters
+            self.idx = kwargs["idx"]
+            self.accum_z = kwargs["accum_z"]
+            self.accum_v = kwargs["accum_v"]
+
+            # sample rate
+            self.period = kwargs["period"]
+
+            # random seed for reproduction
+            self._seed = kwargs["_seed"]
+
+            # for degradation and rul estimation
+            self.age = kwargs["age"]
+            self.cycle_time = kwargs["cycle_time"]
+
+            # for calculating the degradation rate, which is avg_load / cycle_time
+            self.avg_load = kwargs["avg_load"]
+            self.count = kwargs["count"]
+        else:
+            self.state = [self.z, self.z, self.v0, self.v0]
+            self.filter_len = 25
+            self.accum_z = np.zeros((self.filter_len,)).tolist()
+            self.accum_v = np.zeros((self.filter_len,)).tolist()
+            self.idx = 0
+            self.period = .05
+            self._seed = 43
+            self.age = 0.0
+            self.cycle_time = 0.0
+            self.avg_load = 0.0
+            self.count = 0
+
         self.seed(self._seed)
 
-        # for degradation, max age is super.eol
-        self.age = 0.0
-        self.cycle_time = 0.0
 
-        # for calculating the degradation rate, which is avg_load / cycle_time
-        self.avg_load = 0.0
-        self.count = 0
+    def save_state(self, filename=""):
+        params = self.__dict__
+        params.pop('filter', None)
+        params.pop('observation_space', None)
+        params.pop('action_space', None)
+        params.pop('nsteps', None)
+        params['accum_z'] = params['accum_z'].tolist()
+        params['accum_v'] = params['accum_v'].tolist()
+        params['modified'] = datetime.datetime.now().strftime("%d%b%y_%H-%M-%S")
+        if (len(filename) < 1):
+            if not os.path.exists(str(os.path.abspath(os.getcwd())+f"\\params\\{self.name}")):
+                os.makedirs(str(os.path.abspath(os.getcwd())+f"\\params\\{self.name}"))
+            filename = f"params/{self.name}/{params['modified']}.json"
+        with open(filename, 'w') as f:
+            json.dump(params, f)
+
+    def load_state(self, filename):
+        if(len(filename) < 1):
+            print("please supply a filename")
+            return
+        else:
+            with open(filename) as f:
+                params = json.load(f)
+
 
     def seed(self, seed):
         """sets the random seed"""
@@ -321,17 +390,17 @@ class ContinuousBatteryCell(Battery, gym.Env):
     def get_v(self, z):
         """returns the ideal open circuit voltage for a given state of charge"""
         assert 0.0 <= z <= 100.0, "z in range [0.0, 100.0]"
-        return np.polyval(self.z_coef, z)[0]
+        return np.polyval(self.z_coef, z)
 
     def get_r0(self, age):
         """returns the value of r0 at a given battery age"""
         assert 0.0 <= age <= self.eol, "age in range [0.0, {}]".format(self.eol)
-        return np.polyval(self.r0_coef, age)[0]
+        return np.polyval(self.r0_coef, age)
 
     def get_q(self, age):
         """returns the charge capacity at a given battery age"""
         assert 0.0 <= age <= self.eol, "age in range [0.0, {}]".format(self.eol)
-        return np.polyval(self.q_coef, age)[0]
+        return np.polyval(self.q_coef, age)
 
     def _dzdt(self, soc, t, current):
         """first order de for state of charge"""
@@ -359,7 +428,7 @@ class ContinuousBatteryCell(Battery, gym.Env):
 
         # noisy observations
         noisy_z = np.clip(np.random.normal(self.z, .01), 0.0, 100.0)
-        noisy_v = np.clip(np.random.normal(self.ocv, .025), -.5, 5.0)[0]
+        noisy_v = np.clip(np.random.normal(self.ocv, .025), -.5, 5.0)
 
         # update accumulator for filtered_z
         if (self.accum_z[-1] == 0):
