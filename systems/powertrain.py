@@ -6,6 +6,7 @@ import csv
 import gym
 import json
 import datetime
+import glob
 import os
 np.random.seed(43)
 
@@ -130,6 +131,30 @@ def three_plot(title="title", figsize=(12, 4),
         f.savefig(filename)
 
 
+def load_checkpoint(parent_directory="params/", battery_name="battery1", checkpoint=""):
+    """
+    @brief: returns a dictionary of the latest battery checkpoint
+
+    @input:
+        parent_directory: the parent directory with the battery sub directories
+        battery_name: name of the battery (subdirectory) to load the file
+        checkpoint: the checkpoint to load. defaults to latest checkpoint
+
+    @output:
+        a dictionary of battery parameters
+    """
+    path = f"{parent_directory}/{battery_name}"
+    checkpoint = max(glob.iglob(path+"/*.json"), key=os.path.getctime).replace('//','\\')
+    #checkpoint = path + "/" + newest
+    print(f"[INFO] loading checkpoint: {checkpoint}")
+
+    with open(checkpoint) as f:
+        checkpoint_file = json.load(f)
+    return checkpoint_file
+
+
+
+
 # ----------------------------------------------------------------------------------- cycle_test
 def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
                dt=1.0, save_plot=False, reset=True, file_name="",
@@ -164,7 +189,7 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
         amp = np.random.uniform(1,2)
         pwr = np.random.uniform(.8, 1.4)
         fct = np.random.uniform(3,5)
-        ofs = np.random.uniform(3,5)
+        ofs = np.random.uniform(int(c)-3,int(c)+3)
         y = np.sin(amp*-x**pwr)/fct+ofs
     done = False
     i = 0
@@ -440,7 +465,9 @@ class ContinuousBatteryCell(Battery, gym.Env):
             self.Ir = _i
             self.z = self.z - _z
             self.h = _h
-            self.ocv = np.polyval(self.z_coef, self.z * 100.0) - self.R * self.Ir - self.R0 * current + self.h + self.M0 * np.sign(current)
+            self.ocv = (np.polyval(self.z_coef, self.z * 100.0) - self.R * self.Ir - self.R0 * current + self.h + self.M0 * np.sign(current))
+            if(type(self.ocv) is not np.float64):
+                    self.ocv = self.ocv[0]
 
             # noisy observations
             noisy_z = np.clip(np.random.normal(self.z, .01), 0.0, 100.0)
@@ -482,6 +509,8 @@ class ContinuousBatteryCell(Battery, gym.Env):
             else:  # charging, assume some amount of degradation occurs
                 self.age += self.avg_load / self.cycle_time * self.charging_age_factor
             self.age = np.clip(self.age, 0.0, self.eol)
+            if(type(self.age) is not np.float64):
+                    self.age = self.age[0]
 
         # living reward
         reward = -.01
