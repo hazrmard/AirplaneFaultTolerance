@@ -131,7 +131,7 @@ def three_plot(title="title", figsize=(12, 4),
         f.savefig(filename)
 
 
-def load_checkpoint(parent_directory="params/", battery_name="battery1", checkpoint=""):
+def load_checkpoint(parent_directory="params/", battery_name="base", checkpoint=""):
     """
     @brief: returns a dictionary of the latest battery checkpoint
 
@@ -143,11 +143,15 @@ def load_checkpoint(parent_directory="params/", battery_name="battery1", checkpo
     @output:
         a dictionary of battery parameters
     """
-    path = f"{parent_directory}/{battery_name}"
-    checkpoint = max(glob.iglob(path+"/*.json"), key=os.path.getctime).replace('//','\\')
-    #checkpoint = path + "/" + newest
-    print(f"[INFO] loading checkpoint: {checkpoint}")
+    if(len(checkpoint) < 2):
+        path = f"{parent_directory}/{battery_name}"
+        checkpoint = max(glob.iglob(path+"/*.json"), key=os.path.getctime).replace('//','\\')
+        #checkpoint = path + "/" + newest
+    else:
+        #checkpoint = f"{parent_directory}/{battery_name}/battery_params.json"
+        checkpoint = f"{parent_directory}/{battery_name}/{checkpoint}"
 
+    print(f"[INFO] loading checkpoint: {checkpoint}")
     with open(checkpoint) as f:
         checkpoint_file = json.load(f)
     return checkpoint_file
@@ -220,9 +224,9 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
         print("cycle time: {:.2f}".format(cell.cycle_time))
     if(verbose > 0):
         print("run: {}\tQ: {:.3f}\tR0: {:.3f}\tavg_load: {:.3f}\tcycle_time: {}\tage: {:.3f}\teol: {}".format(run_num, cell.Q, cell.R0, cell.avg_load, int(cell.cycle_time), cell.age, int(cell.eol)))
+    factor = 1 / 60 * cell.period
+    X = np.arange(0, i) * factor
     if(show_plot):
-        factor = 1 / 60 * cell.period
-        X = np.arange(0, i)*factor
         three_plot(title="Continuous Battery Cell Plots", figsize=(12,4),
                    plot1=np.array([X, np.array(cs)]),
                    plot2=np.array([X, vn, X, vf, X, cv]),
@@ -243,6 +247,7 @@ def cycle_test(cell, random_load=True, verbose=0, show_plot=False,
     else: # the cell needs charged before it can discharge, but degradation still occurs
         cell.reset_cycle()
 
+    return {'dt': X, 'v_hat': vf, 'z_hat': cf}
 
 
 ############################################################################################
@@ -385,7 +390,18 @@ class ContinuousBatteryCell(Battery, gym.Env):
         self.cycle_flag = False
 
 
-    def save_state(self, filename=""):
+    def charge(self, dt, current):
+        while True:
+            obs, reward, done, info = self.step(dt, current)
+            fully_charged = np.clip(np.random.normal(.995, .01), .94, 1.0)
+            if (self.state[1] >= fully_charged):
+                if (self.state[1] <= fully_charged * 1.05):
+                    break;
+                else:
+                    print("overcharged!")
+                    self.z = 1.0
+
+    def save_checkpoint(self, filename=""):
         params = self.__dict__
         params.pop('filter', None)
         params.pop('observation_space', None)
@@ -400,14 +416,6 @@ class ContinuousBatteryCell(Battery, gym.Env):
             filename = f"params/{self.name}/{params['modified']}.json"
         with open(filename, 'w') as f:
             json.dump(params, f)
-
-    def load_state(self, filename):
-        if(len(filename) < 1):
-            print("please supply a filename")
-            return
-        else:
-            with open(filename) as f:
-                params = json.load(f)
 
 
     def seed(self, seed):
