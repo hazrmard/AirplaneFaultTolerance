@@ -1,4 +1,5 @@
 *.ini
+*.pptx
 .ipynb_checkpoints
 __pycache__
 .vscode

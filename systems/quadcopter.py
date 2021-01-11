@@ -52,7 +52,7 @@ QUADPARAMS = {
     'r': 0.1,                   # (metres), Radius of sphere representing centre of quadcopter
     'L': 0.3,                   # (metres), length of arm
     'prop_size': [10, 4.5],     # (inches), diameter & pitch of rotors
-    'weight': 1.2
+    'mass': 1.2                 # (kilograms)
     }
 
 CONTROLLER_PARAMS = {
@@ -132,9 +132,9 @@ class Quadcopter:
         self.quad['m3'] = Motor(self.quad['prop_size'][0], self.quad['prop_size'][1])
         self.quad['m4'] = Motor(self.quad['prop_size'][0], self.quad['prop_size'][1])
         # From Quadrotor Dynamics and Control by Randal Beard
-        ixx = ((2*self.quad['weight']*self.quad['r']**2)/5)+(2*self.quad['weight']*self.quad['L']**2)
+        ixx = ((2*self.quad['mass']*self.quad['r']**2)/5)+(2*self.quad['mass']*self.quad['L']**2)
         iyy = ixx
-        izz = ((2*self.quad['weight']*self.quad['r']**2)/5)+(4*self.quad['weight']*self.quad['L']**2)
+        izz = ((2*self.quad['mass']*self.quad['r']**2)/5)+(4*self.quad['mass']*self.quad['L']**2)
         self.quad['I'] = np.array([[ixx,0,0],[0,iyy,0],[0,0,izz]])
         self.quad['invI'] = np.linalg.inv(self.quad['I'])
 
@@ -221,10 +221,10 @@ class Quadcopter:
 
         F_d = [i * (0.5 * air_density * C_d) for i in DragVector]
 
-        x_dotdot = np.array([0, 0, -self.quad['weight'] * self.g]) \
+        x_dotdot = np.array([0, 0, -self.quad['mass'] * self.g]) \
                    + np.dot(self.rotation_matrix(self.state[6:9]),
                             np.array([0, 0, (self.quad['m1'].thrust + self.quad['m2'].thrust + self.quad['m3'].thrust + self.quad['m4'].thrust)])) \
-                            /self.quad['weight'] \
+                            /self.quad['mass'] \
                    + F_d
 
         state_dot[3] = x_dotdot[0]
@@ -549,11 +549,16 @@ class Controller:
 
 class QuadcopterSupervisorEnv(gym.Env):
 
+    # Bounds used to reset the environment
     bounds_position = (0, 10.)
     bounds_linear_rate = (-0.1, 0.1)
     bounds_orientation = (-0.25 * np.pi, 0.25 * np.pi)
     bounds_angular_rate = (-0.025 * np.pi, 0.025 * np.pi)
-    action_domain = (0., 1.)
+    # Range of inputs that the environment accepts. Can be more restrictive
+    # than action_space. Inputs actions in step() are clipped to this range first:
+    action_domain = (-1., 1.)
+    # Action "range" is set on a quadcopter basis because each quadcopter may
+    # have different motor speed limits.
 
 
     def __init__(self, ctrl: Controller, dt: float=1e-2, seed=None,
@@ -561,7 +566,6 @@ class QuadcopterSupervisorEnv(gym.Env):
         super().__init__()
         self.ctrl = ctrl
         self.dt = dt    # simulation interval
-        self.n = 0      # number of steps
         self.max_n = 1000
         self.simulate_takeoff = simulate_takeoff
         # Error in position afforded by simulation time:
@@ -583,13 +587,16 @@ class QuadcopterSupervisorEnv(gym.Env):
             high=np.ones(4, dtype=np.float32)
         )
         # These parameters are changed on reset() or at each step()
-        self._start_pos = None  # populated when reset() is called
+        self.n = None           # number of steps so far in episode
         self.direction = None   # unit vector pointing from start to end
+        self._start_pos = None  # populated when reset() is called
         self._total_length = None # distance from start to end
         self._reset_params = None # parameter values when deterministically resetting
         self._accumulated_reward = 0.   # total reward in episode so far
         self._action_domain_span = None # domain of actions action space
+        self._action_domain_min = None  # smallest action in domain
         self._action_range_span = None  # the range to which actions are mapped for PID controller
+        self._action_range_min = None   # smallest action output added to PID controller
 
 
     def takeoff(self):
@@ -643,9 +650,12 @@ class QuadcopterSupervisorEnv(gym.Env):
         self.direction = (self.ctrl.target - self.ctrl.quadcopter.state[0:3])
         self._total_length = np.linalg.norm(self.direction) # start -> target shortest distance
         self.direction /= 1 if self._total_length==0 else self._total_length  # unit vector
-        # supervisory control parameters
+        # supervisory control parameters for scaling input to units PID controller
+        # can understand. Mapping is a linear function from domain to range.
         self._action_domain_span = self.action_domain[1] - self.action_domain[0]
-        self._action_range_span = self.ctrl.MOTOR_LIMITS[1] - 0.
+        self._action_domain_min = self.action_domain[0]
+        self._action_range_span = 2 * self.ctrl.MOTOR_LIMITS[0]
+        self._action_range_min = -self.ctrl.MOTOR_LIMITS[0]
         self._action_gradient = self._action_range_span / self._action_domain_span
 
         if self.simulate_takeoff:
@@ -693,9 +703,12 @@ class QuadcopterSupervisorEnv(gym.Env):
         m = self.ctrl.get_control()  # units of motor speed
         # Apply additive supervisory correction
         # Action is the output of tanh, in range [-1, 1]. Converting to [0, self.ctrl.MOTOR_LIMITS[1]]
-        # y - y1 = m * (x - x1), where (x1, y1) = (0., 0.)
+        # y - y1 = m * (x - x1) => y = m * (x - x1) + y1
+        # Where (x1, y1) are minimum values of action domain and range respectively
         action_clipped = np.clip(action, *self.action_domain)
-        action_in_motor_units = self._action_gradient * (action_clipped - self.action_domain[0])
+        action_in_motor_units = self._action_gradient \
+                                    * (action_clipped - self._action_domain_min) \
+                                + self._action_range_min
         m += action_in_motor_units
         # Update quadcopter
         self.ctrl.quadcopter.set_motor_speeds(m)
@@ -724,25 +737,19 @@ class QuadcopterSupervisorEnv(gym.Env):
                 R, end = r * (1 + deviation), False
             elif deviation <= self.radius_arms:
                 R, end = r, False
-            try:
-                self._accumulated_reward += R
-            except UnboundLocalError:
-                print('qt', qt)
-                print('dir', self.direction)
-                print(np.cross(qt, self.direction))
-                print(deviation, self.radius_arms)
-                raise Exception
+            self._accumulated_reward += R
         #Situations where episode must end:
         #- Close enough to the target
-        elif target_dist <= 1.5 * self.pos_margin:
-            R, end = -self._accumulated_reward, True
+        elif target_dist <= self.pos_margin:
+            R, end = 0, True
+            # R, end = -self._accumulated_reward, True
             # R, end = self._total_length / self.n, True
             # return (np.abs(r) * self.n) / (speed + 1e-1), True
         # - Taking too long
         elif self.n >= self.max_n:
             R, end = 0, True
             # return r * (target_dist + speed), True
-        return r, end
+        return R, end
 
 
 
@@ -752,13 +759,13 @@ def plot_quadcopter(env: QuadcopterSupervisorEnv, *agents, labels=None, figsize=
     # All args after *agents must be keyword arguments.
     predict_fns = []
     if len(agents) == 0:
-        predict_fns.append(_make_agent(env.action_domain[0]))
+        predict_fns.append(_make_agent(0))
     else:
         for agent in agents:
             if isinstance(agent, (int, float)):
                 predict_fns.append(_make_agent(agent))
             elif agent is None:
-                predict_fns.append(_make_agent(env.action_domain[0]))
+                predict_fns.append(_make_agent(0))
             else:
                 predict_fns.append(agent.predict)
     
