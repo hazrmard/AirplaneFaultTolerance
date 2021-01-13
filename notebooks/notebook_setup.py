@@ -8,8 +8,9 @@ import matplotlib.pyplot as plt
 
 
 # Local packages
-pyStateSpace_path = os.path.abspath('../pyStateSpace')
-pyTorchBridge_path = os.path.abspath('../pyTorchBridge')
+file_path = os.path.abspath(os.path.dirname(__file__))
+pyStateSpace_path = os.path.join(file_path, '../../pyStateSpace')
+pyTorchBridge_path = os.path.join(file_path, '../../pyTorchBridge')
 try:
     import pystatespace
 except ImportError:
@@ -21,6 +22,8 @@ except ImportError:
     if pyTorchBridge_path not in sys.path:
         sys.path.append(pyTorchBridge_path)
 
+local_path = os.path.join(file_path, '..')
+sys.path.append(local_path)
 
 
 # Plotting parameters

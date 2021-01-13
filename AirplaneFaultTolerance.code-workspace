@@ -10,5 +10,9 @@
 			"path": "..\\pyTorchBridge"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"terminal.integrated.env.linux": {
+			"PYTHONPATH": "${workspaceFolder}/../pyStateSpace:${workspaceFolder}/../pyTorchBridge"
+		}
+	}
 }
