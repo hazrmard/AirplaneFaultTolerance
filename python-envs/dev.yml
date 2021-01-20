@@ -15,7 +15,7 @@ dependencies:
   # Developement tools
   - jupyter
   - pylint
-  - jupyter_nbextensions_configurator
+  - jupyter_contrib_nbextensions
   - pip
   - pip:
     - gym[box2d]
