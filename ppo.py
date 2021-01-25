@@ -1,8 +1,11 @@
 """
 https://github.com/nikhilbarhate99/PPO-PyTorch/blob/master/PPO.py
 """
+from typing import Callable
+
 import torch
 import torch.nn as nn
+from torch import Tensor
 from torch.distributions import Distribution, Bernoulli, Categorical, MultivariateNormal
 from torch.utils.tensorboard import SummaryWriter
 from higher import innerloop_ctx
@@ -27,7 +30,7 @@ class Memory:
         self.is_terminals = []
 
 
-    def clear_memory(self):
+    def clear(self):
         del self.actions[:]
         del self.states[:]
         del self.logprobs[:]
@@ -199,7 +202,7 @@ class PPO:
     
 
     def update(self, policy, memory, epochs: int=1, optimizer=None, summary=None,
-        higher_optim=False):
+        higher_optim=False, grad_callback=None):
 
         rewards = returns(memory.rewards, memory.is_terminals, self.gamma)
         # Casting to correct data type and DEVICE
@@ -236,6 +239,7 @@ class PPO:
             loss = -torch.min(surr1, surr2) # policy loss
             loss += 0.5 * self.MseLoss(state_values, rewards) # value loss
             loss -= 0.01 * dist_entropy  # randomness (exploration)
+            loss = loss.mean()
             
             # Take gradient step. If optimizer==None, then just backpropagate
             # gradients.
@@ -245,12 +249,16 @@ class PPO:
                 # optimizers to not need `backward()` and `zero_grad()`
                 if not higher_optim:
                     optimizer.zero_grad()
-                    loss.mean().backward()
+                    loss.backward()
+                    if grad_callback is not None:
+                        apply_grad_callback(policy, grad_callback)
                     optimizer.step()
                 else:
-                    optimizer.step(loss.mean())
+                    optimizer.step(loss, grad_callback=grad_callback)
             else:
-                loss.mean().backward()
+                loss.backward()
+                if grad_callback is not None:
+                    apply_grad_callback(policy, grad_callback)
         return loss
 
 
@@ -326,3 +334,10 @@ def returns(rewards, is_terminals, gamma):
         discounted_reward = reward + (gamma * discounted_reward)
         returns.insert(0, discounted_reward)
     return returns
+
+
+
+def apply_grad_callback(model: nn.Module, callback: Callable[[List[Tensor]], List[Tensor]]):
+    new_grads = callback([p.grad for p in model.parameters()])
+    for p, ng in zip(model.parameters(), new_grads):
+        p.grad = ng
