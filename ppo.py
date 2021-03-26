@@ -1,7 +1,7 @@
 """
 https://github.com/nikhilbarhate99/PPO-PyTorch/blob/master/PPO.py
 """
-from typing import Callable
+from typing import Callable, List
 
 import torch
 import torch.nn as nn
@@ -9,6 +9,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Bernoulli, Categorical, MultivariateNormal
 from torch.utils.tensorboard import SummaryWriter
 from higher import innerloop_ctx
+from higher.optim import DifferentiableOptimizer
 import gym
 import numpy as np
 from tqdm.auto import trange
@@ -197,20 +198,21 @@ class PPO:
         self.seed = self.random.rand() if seed is None else seed
         self.summary = summary
         self.meta_policy = None
-        torch.manual_seed(self.seed)
+        if seed is not None: torch.manual_seed(self.seed)
 
     
 
     def update(self, policy, memory, epochs: int=1, optimizer=None, summary=None,
-        higher_optim=False, grad_callback=None):
+        grad_callback=None):
 
         rewards = returns(memory.rewards, memory.is_terminals, self.gamma)
+        truncate = len(rewards)
         # Casting to correct data type and DEVICE
         # pylint: disable=not-callable
-        rewards = torch.tensor(rewards).float().to(DEVICE)
-        old_states = torch.tensor(memory.states).float().to(DEVICE).detach()
-        old_actions = torch.tensor(memory.actions).float().to(DEVICE).detach()
-        old_logprobs = torch.tensor(memory.logprobs).float().to(DEVICE).detach()
+        rewards = torch.tensor(rewards[:truncate]).float().to(DEVICE)
+        old_states = torch.tensor(memory.states[:truncate]).float().to(DEVICE).detach()
+        old_actions = torch.tensor(memory.actions[:truncate]).float().to(DEVICE).detach()
+        old_logprobs = torch.tensor(memory.logprobs[:truncate]).float().to(DEVICE).detach()
 
         # If states/actions are 1D arrays of single number states/actions,
         # convert them to 2D matrix of 1 column where each row is one timestep.
@@ -247,16 +249,16 @@ class PPO:
                 # the 'higher' library wraps optimizers to make parameters
                 # differentiable w.r.t earlier versions of parameters. Those
                 # optimizers to not need `backward()` and `zero_grad()`
-                if not higher_optim:
+                if not isinstance(optimizer, DifferentiableOptimizer):
                     optimizer.zero_grad()
-                    loss.backward()
+                    loss.backward(retain_graph=True)
                     if grad_callback is not None:
                         apply_grad_callback(policy, grad_callback)
                     optimizer.step()
                 else:
                     optimizer.step(loss, grad_callback=grad_callback)
             else:
-                loss.backward()
+                loss.backward(retain_graph=True)
                 if grad_callback is not None:
                     apply_grad_callback(policy, grad_callback)
         return loss
@@ -279,27 +281,28 @@ class PPO:
         memory.returns = returns(memory.rewards, memory.is_terminals, self.gamma)
 
 
-    def learn(self, timesteps, update_interval=None, track_higher_gradients=False):
+    def learn(self, timesteps, update_interval=None, track_higher_grads=False,
+              lr_scheduler=None, callback=None, reward_aggregation='episodic'):
         if update_interval is None:
             update_interval = self.update_interval
         state = self.env.reset()
         memory = Memory()
         episodic_rewards = [0.]
+        interval_rewards = [0.]
         # This context wraps the policy and optimizer to track parameter updates
         # over time such that d Params(time=t) / d Params(time=t-n) can be calculated.
         # If not tracking higher gradients, a dummy context is used which does
         # nothing.
-        context = innerloop_ctx if track_higher_gradients else higher_dummy_context
-        with context(self.policy, self.optimizer, copy_initial_weights=False) \
-                as (policy, optimizer):
+        with innerloop_ctx(self.policy, self.optimizer, track_higher_grads=track_higher_grads,
+                           copy_initial_weights=False) as (policy, optimizer):
 
-            for t in trange(1, timesteps + 1, leave=False):
+            for t in trange(1, int(timesteps) + 1, leave=False):
                 # Running policy:
                 memory.states.append(state)
                 action, logprob = policy.predict(state)
-                # print('a', action, 'log(p(a))', logprob)
                 state, reward, done, _ = self.env.step(action)
                 episodic_rewards[-1] += reward
+                interval_rewards[-1] += reward
                 if done:
                     state = self.env.reset()
                     episodic_rewards.append(0.)
@@ -310,13 +313,23 @@ class PPO:
                 
                 # update if its time
                 if t % update_interval == 0:
-                    self.update(policy, memory, self.epochs, optimizer,
-                                self.summary, track_higher_gradients)
-                    memory.clear_memory()
+                    interval_rewards.append(0.)
+                    loss = self.update(policy, memory, self.epochs, optimizer,
+                                       self.summary)
+                    if callback is not None:
+                        callback(locals())
+                    if lr_scheduler is not None:
+                        lr_scheduler()
+                    memory.clear()
+
         
-            self.meta_policy = policy if track_higher_gradients else None
+            self.meta_policy = policy if track_higher_grads else None
         self.policy.load_state_dict(policy.state_dict())
-        return episodic_rewards[:-1 if len(episodic_rewards) > 1 else None]
+
+        if reward_aggregation == 'episodic':
+            return episodic_rewards[:-1 if len(episodic_rewards) > 1 else None]
+        else:
+            return interval_rewards
 
 
     def predict(self, state):
@@ -324,8 +337,18 @@ class PPO:
 
 
 
-def returns(rewards, is_terminals, gamma):
+def returns(rewards, is_terminals, gamma, truncate=False):
     # Monte Carlo estimate of state rewards:
+    # Discarding rewards for incomplete episodes because their returns
+    # will be inaccurate. For e.g. if episode rewards = 1,1,1,1,1 but the current
+    # batch only has rewards for first 3 steps =1,1,1, then the returns=3,2,1,
+    # where they should be 5,4,3
+    if truncate:
+        if True in is_terminals:
+            idx_from_end = is_terminals[::-1].index(True)
+            if idx_from_end > 0:
+                rewards = rewards[:-idx_from_end]
+                is_terminals = is_terminals[:-idx_from_end]
     returns = []
     discounted_reward = 0
     for reward, is_terminal in zip(reversed(rewards), reversed(is_terminals)):
