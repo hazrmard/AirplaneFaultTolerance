@@ -47,9 +47,11 @@ class TanksFactory:
     resistances : np.ndarray, optional
         Resistance of valves, by default np.ones(6)*1e2
     pumps : np.ndarray, optional
-        Maximum capacity of pumps (m^3/s), by default np.ones(6)*0.1
+        Maximum capacity of pumps (m^3/s), by default np.ones(6)*0.01
+    leaks : np.ndarray, optional
+        Fuel leakage from each tank (m^3/s), by default np.zeros(6)
     engines : np.ndarray, optional
-        Fuel demand of engines (m^3/s), by default np.ones(6)*0.1
+        Fuel demand of engines (m^3/s), by default np.ones(2)*0.02
 
     Attributes
     ----------
@@ -69,8 +71,9 @@ class TanksFactory:
                  valves_min: np.ndarray=np.zeros(6),
                  valves_max: np.ndarray=np.ones(6),
                  resistances: np.ndarray=np.ones(6) * 1e2,
-                 pumps: np.ndarray=np.ones(6) * 0.1,
-                 engines: np.ndarray=np.ones(2) * 0.1):
+                 leaks: np.ndarray=np.zeros(6),
+                 pumps: np.ndarray=np.ones(6) * 0.01,
+                 engines: np.ndarray=np.ones(2) * 0.02):
         self.n = n                     # Number of tanks
         self.e = e                     # Number of engines
         self.rho = rho                 # Density of fluid
@@ -80,6 +83,7 @@ class TanksFactory:
         self.valves_min = np.copy(valves_min )      # valve capacities on each tank
         self.valves_max = np.copy(valves_max)       # valve capacities on each tank
         self.resistances = np.copy(resistances)  # valve resistances where flowrate = g.height/resistance
+        self.leaks = leaks
         self.pumps = np.copy(pumps)        # pumps capacities on each tank
         self.engines = np.copy(engines)     # fuel demand per engine
 
@@ -94,6 +98,7 @@ class TanksFactory:
         def _dxdt(time: float, x: np.ndarray, u: np.ndarray) -> np.ndarray:
             # print(x)
             dx = np.zeros_like(x)
+            dx -= self.leaks
             # Adjust actual valve state
             u = self.valves_min + u * (self.valves_max - self.valves_min)
             # pump fuel to engines
@@ -191,7 +196,7 @@ class TanksPhysicalEnv(gym.Env):
                'resistances', 'pumps', 'engines')
 
 
-    def __init__(self, tanks: TanksFactory, tstep: float=1e-1, seed=None):
+    def __init__(self, tanks: TanksFactory, tstep: float=1., seed=None):
         super().__init__()
         self.tanks = tanks
         self.tstep = tstep
@@ -200,24 +205,6 @@ class TanksPhysicalEnv(gym.Env):
                                 out=tanks.y, tstep=tstep)
         self.action_space = gym.spaces.MultiBinary(self.n)
         self.observation_space = gym.spaces.Box(0, np.inf, (self.n,))
-
-        median = len(tanks.heights) // 2
-        self.odd = len(tanks.heights) % 2 != 0
-        self.median_idx = median
-        self.left_idx = slice(None, median)
-        self.right_idx = slice(median + (len(tanks.heights) % 2), None)
-        self.left_arm = np.arange(median, 0, -1)
-        self.right_arm = np.arange(1, median + 1)
-        self.max_arm = abs(max(self.right_arm))
-        median = len(tanks.engines) // 2
-        self.odd_e = len(tanks.engines) % 2 != 0
-        self.median_e_idx = median
-        self.left_e_idx = slice(None, median)
-        self.right_e_idx = slice(median + (len(tanks.engines) % 2), None)
-
-        episode_duration = sum(tanks.heights * tanks.cross_section) \
-                       / min(sum(tanks.pumps), sum(tanks.engines))
-        self.episode_length = int(episode_duration / tstep)
 
         self.x = None
         self.t = None
@@ -247,8 +234,37 @@ class TanksPhysicalEnv(gym.Env):
         np.ndarray
             The initial state vector.
         """
+        # Tanks
+        median = self.n // 2
+        self.odd = self.n % 2 != 0
+        self.median_idx = median
+        self.left_idx = slice(None, median)
+        self.right_idx = slice(median + (self.n % 2), None)
+        self.left_arm = np.arange(median, 0, -1)
+        self.right_arm = np.arange(1, median + 1)
+        self.max_arm = abs(max(self.right_arm))
+        # Max std dev of fuel weight for reward calculation, when fuel is only in
+        # extreme tanks:
+        weights = np.zeros(self.n)
+        weights[[0, -1]] = self.tanks.heights[[0, -1]] * self.tanks.cross_section[[0, -1]]
+        self.max_spread = np.sqrt(sum(self.left_arm**2 * weights[self.left_idx]  \
+                          + self.right_arm**2 * weights[self.right_idx]) \
+                        / (sum(weights) + 1e-5))
+    
+        # Engines
+        median = len(self.tanks.engines) // 2
+        self.odd_e = len(self.tanks.engines) % 2 != 0
+        self.median_e_idx = median
+        self.left_e_idx = slice(None, median)
+        self.right_e_idx = slice(median + (len(self.tanks.engines) % 2), None)
+
+        episode_duration = sum(self.tanks.heights * self.tanks.cross_section) \
+                       / min(sum(self.tanks.pumps), sum(self.tanks.engines))
+        self.episode_length = int(episode_duration / self.tstep)
+        # Time/state-keeping
         self.t = 0.
-        self.x = np.copy(self.tanks.heights) # * (1 + 0.2*self.np_random.randn(self.tanks.n))
+        self.x = np.copy(self.tanks.heights)
+        self.x *= (1 - 0.2 * self.np_random.rand(len(self.x)))
         # self.x = np.clip(self.x, np.zeros_like(self.tanks.heights), self.tanks.heights)
         return self.x
 
@@ -312,20 +328,38 @@ class TanksPhysicalEnv(gym.Env):
             Standard deviation of fuel mass distribution.
         level: float
             Average height of fuel in tanks.
+        deficit: float
+            Fraction of fuel demand from engines not met.
         """
         x_next = np.clip(x_next, 0, None)
         weights = x_next * self.tanks.cross_section
         total_weights = sum(weights)
         moments_counterclockwise = weights[self.left_idx] * self.left_arm
         moments_clockwise = weights[self.right_idx] * self.right_arm
-        centre = sum(moments_clockwise - moments_counterclockwise) / total_weights
+
+        centre = sum(moments_clockwise - moments_counterclockwise) / (total_weights + 1e-5)
+        centre /= self.median_idx
         if total_weights == 0: centre = 0.
-        activity = np.mean(u)
+
+        # TODO: This does not account for faults when valves are stuck, therefore
+        # an action which has no effect will still yeild a reward
+        # activity = np.mean(u)
+        activity = np.mean(np.clip(u, self.tanks.valves_min, self.tanks.valves_max))
+        # TODO: activity penalty => intended - actual
+    
         spread = np.sqrt(sum((self.left_arm - centre)**2 * weights[self.left_idx]  \
                           + (self.right_arm - centre)**2 * weights[self.right_idx]) \
-                        / total_weights)
-        level = np.sum(x_next)
-        return centre, activity, spread, level
+                        / (total_weights + 1e-5))
+        spread /= self.max_spread
+    
+        level = np.sum(x_next) / np.sum(self.tanks.heights)
+    
+        fuel_lost = np.sum(x - x_next)
+        fuel_required = np.sum(self.tanks.engines) * self.tstep
+        deficit = np.clip((fuel_required - fuel_lost) / fuel_required, 0, 1)
+        # TODO: No point in penalizing activity if the corresponding tank is empty,
+        # penalty should be proportional (?) to fuel level.
+        return centre, activity, spread, level, deficit
 
 
     def reward(self, t: float, x: np.ndarray, u: np.ndarray, x_next: np.ndarray,\
@@ -352,9 +386,10 @@ class TanksPhysicalEnv(gym.Env):
         float
             The composite reward value.
         """
-        centre, activity, spread, level = self.reward_components(t, x, u, x_next, done)
+        centre, activity, spread, level, deficit = self.reward_components(t, x, u, x_next, done)
         # return -abs(centre) + spread
-        return (1 - abs(centre) / self.max_arm) * spread - activity
+        # TODO: Plot individual components, normalize, and re-weigh
+        return (1 - abs(centre) / self.max_arm) * spread - activity - deficit
 
 
     def set_parameters(self, **params):
@@ -479,17 +514,19 @@ def plot_tanks(env, agent=None, plot='both', columns=2, single_size=(6,4), legen
                            / min(sum(env.tanks.pumps), sum(env.tanks.engines))
         episode_length = int(episode_duration / env.tstep)
 
-
+    initial = None
     if plot in ('closed', 'both'):
         u_closed = np.zeros((episode_length, n_tanks))
         x_closed = np.zeros_like(u_closed)
-        env.reset()
+        initial = env.reset()
         for i in range(len(u_closed)):
             x_closed[i] = env.step(u_closed[i])[0]
     if plot in ('open', 'both'):
         u_open = np.ones((episode_length, n_tanks))
         x_open = np.zeros_like(u_open)
         env.reset()
+        if initial is not None:
+            env.x = initial
         for i in range(len(u_open)):
             x_open[i] = env.step(u_open[i])[0]
 
