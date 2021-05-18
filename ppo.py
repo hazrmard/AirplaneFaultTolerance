@@ -282,7 +282,9 @@ class PPO:
 
 
     def learn(self, timesteps, update_interval=None, track_higher_grads=False,
-              lr_scheduler=None, callback=None, reward_aggregation='episodic'):
+              lr_scheduler=None,
+              step_callback=None, interval_callback=None,
+              reward_aggregation='episodic'):
         if update_interval is None:
             update_interval = self.update_interval
         state = self.env.reset()
@@ -300,7 +302,7 @@ class PPO:
                 # Running policy:
                 memory.states.append(state)
                 action, logprob = policy.predict(state)
-                state, reward, done, _ = self.env.step(action)
+                state, reward, done, info = self.env.step(action)
                 episodic_rewards[-1] += reward
                 interval_rewards[-1] += reward
                 if done:
@@ -310,14 +312,17 @@ class PPO:
                 memory.logprobs.append(logprob)
                 memory.rewards.append(reward)
                 memory.is_terminals.append(done)
+
+                if step_callback is not None:
+                    step_callback(locals())
                 
                 # update if its time
                 if t % update_interval == 0:
                     interval_rewards.append(0.)
                     loss = self.update(policy, memory, self.epochs, optimizer,
                                        self.summary)
-                    if callback is not None:
-                        callback(locals())
+                    if interval_callback is not None:
+                        interval_callback(locals())
                     if lr_scheduler is not None:
                         lr_scheduler()
                     memory.clear()

@@ -70,10 +70,10 @@ class TanksFactory:
                  cross_section: np.ndarray=np.ones(6),
                  valves_min: np.ndarray=np.zeros(6),
                  valves_max: np.ndarray=np.ones(6),
-                 resistances: np.ndarray=np.ones(6) * 1e2,
+                 resistances: np.ndarray=np.ones(6) * 1e3,
                  leaks: np.ndarray=np.zeros(6),
                  pumps: np.ndarray=np.ones(6) * 0.01,
-                 engines: np.ndarray=np.ones(2) * 0.02):
+                 engines: np.ndarray=np.ones(2) * 0.01):
         self.n = n                     # Number of tanks
         self.e = e                     # Number of engines
         self.rho = rho                 # Density of fluid
@@ -113,8 +113,8 @@ class TanksFactory:
             if median_tank:
                 supply_left = min(self.pumps[median_tank_idx] / 2, demand_left)
                 supply_right = min(self.pumps[median_tank_idx] / 2, demand_right)
-                demand_left -= demand_left
-                demand_right -= demand_right
+                demand_left -= supply_left
+                demand_right -= supply_right
                 dx[median_tank_idx] -= (supply_left + supply_right)  \
                                        / self.cross_section[median_tank_idx]
             
@@ -294,9 +294,9 @@ class TanksPhysicalEnv(gym.Env):
         right_supply = sum(x_next[self.right_idx] + median_supply)
         done = (left_demand > left_supply) or (right_demand > right_supply) or self.t > self.episode_length
         
-        reward = self.reward(self.t, self.x, action, x_next, done)
+        reward, components = self.reward(self.t, self.x, action, x_next, done)
         self.x = x_next
-        return self.x, reward, done, {}
+        return self.x, reward, done, components
 
 
     def reward_components(self, t: float, x: np.ndarray, u: np.ndarray, \
@@ -341,11 +341,7 @@ class TanksPhysicalEnv(gym.Env):
         centre /= self.median_idx
         if total_weights == 0: centre = 0.
 
-        # TODO: This does not account for faults when valves are stuck, therefore
-        # an action which has no effect will still yeild a reward
-        # activity = np.mean(u)
         activity = np.mean(np.clip(u, self.tanks.valves_min, self.tanks.valves_max))
-        # TODO: activity penalty => intended - actual
     
         spread = np.sqrt(sum((self.left_arm - centre)**2 * weights[self.left_idx]  \
                           + (self.right_arm - centre)**2 * weights[self.right_idx]) \
@@ -388,8 +384,11 @@ class TanksPhysicalEnv(gym.Env):
         """
         centre, activity, spread, level, deficit = self.reward_components(t, x, u, x_next, done)
         # return -abs(centre) + spread
-        # TODO: Plot individual components, normalize, and re-weigh
-        return (1 - abs(centre) / self.max_arm) * spread - activity - deficit
+        return (
+            (level + (2 * (1 - abs(centre)) + spread) / 2 - 0.25*activity) * (1 - deficit),
+            dict(centre=centre, activity=activity, spread=spread, level=level, deficit=deficit)
+        )
+        # return level + 2 * (1 - abs(centre)) * spread - activity - deficit
 
 
     def set_parameters(self, **params):

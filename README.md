@@ -7,7 +7,17 @@ Using reinforcement learning to control hybrid systems under degradation.
 * `systems/`: Various reinforcement learning environments for testing.
 * `python-envs/`: Directory containing environment files for development/deployment with/without GPU packages.
 * Notebooks:
-  * E-MAML-*: Code pertaining to the AAAI 2020 submission on enhanced-meta learning.
+  * \*-MAML-\*: Variations on Model Agnostic Meta-Learning
+  * Notebooks with conference name contain code for a published work. They should be run with the appropriate tag/commit referenced in the paper (see below).
+  * Scratch-*: Experimentation.
+
+  ### Notebooks x tags/branches for submissions
+
+  For each branch or tag, the listed notebook containes the relevant code for the appropriate conference submission.
+
+  * [Branch: aaai2021](https://git.isis.vanderbilt.edu/ahmedi/airplanefaulttolerance/-/tree/aaai2021) for `E-MAML-*.ipynb`
+  * [Branch: phm2020](https://git.isis.vanderbilt.edu/ahmedi/airplanefaulttolerance/-/tree/phm2020 for `Meta-RL.ipynb`
+  * [Branch: ifac2020](https://git.isis.vanderbilt.edu/ahmedi/airplanefaulttolerance/-/tree/ifac2020) for `IFAC Congress 2020.ipynb` 
 
 ## Usage
 
@@ -23,7 +33,7 @@ This repository depends on [Anaconda](https://docs.conda.io/en/latest/miniconda.
 
     * Linux
     
-        * Prerequisites for stable-baselines library. Run: `sudo apt-get install cmake libopenmpi-dev python3-dev zlib1g-dev`
+        * Optional: prerequisites for stable-baselines library. Run: `sudo apt-get install cmake libopenmpi-dev python3-dev zlib1g-dev`
 
 2. Install python dependencies
 

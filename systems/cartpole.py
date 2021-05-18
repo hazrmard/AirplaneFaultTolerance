@@ -18,7 +18,6 @@ class CartPoleEnv(OGCartPole):
     def __init__(self, seed=None):
         super().__init__()
         self.default_params = {p: getattr(self, p) for p in CartPoleEnv.params}
-        self._seed = seed
         self.seed(seed)
 
 

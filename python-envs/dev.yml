@@ -8,6 +8,7 @@ dependencies:
   - matplotlib>=3.3.2
   - numpy
   - pytorch::pytorch=1.5
+  - optuna=2.5.0
   - cudatoolkit=10.2
   - pandas
   - tqdm
@@ -21,5 +22,6 @@ dependencies:
     - gym[box2d]
     - stable-baselines3==0.9.0
     - tensorboard
+    - tensorboardX
     - joblib
     - higher==0.2.1

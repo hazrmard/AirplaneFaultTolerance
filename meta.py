@@ -3,6 +3,7 @@ Meta-learning functions.
 """
 
 from itertools import combinations
+from sklearn.base import BaseEstimator
 
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -10,9 +11,9 @@ from higher import innerloop_ctx
 import numpy as np
 from tqdm.auto import tqdm, trange
 import matplotlib.pyplot as plt
+from sklearn import cluster
 from sklearn.neural_network import MLPRegressor
-from scipy.spatial.distance import jensenshannon
-from pytorchbridge import TorchEstimator    # pylint: disable=import-error
+from scipy.spatial.distance import jensenshannon, cosine, euclidean
 
 from utils import copy_mlp_regressor, copy_tensor, higher_dummy_context, get_gradients
 from ppo import PPO, Memory, DEVICE, returns
@@ -153,11 +154,11 @@ def maml_initialize(starting_policy, env_fn, n, n_inner, alpha_inner, **ppo_para
 
 
 
-def rank_policies(memory, library, **ppo_params):
+def rank_policies(memory: Memory, library, **ppo_params):
     agent = PPO(None, **ppo_params)
     # pylint: disable=not-callable
     returns = torch.tensor(memory.returns).float().to(DEVICE).detach()
-    returns = (returns - returns.mean()) / (returns.std() + 1e-5)
+    # eturns = (returns - returns.mean()) / (returns.std() + 1e-5)
     states = torch.tensor(memory.states).float().to(DEVICE).detach()
     actions = torch.tensor(memory.actions).float().to(DEVICE).detach()
     vals = []
@@ -170,7 +171,7 @@ def rank_policies(memory, library, **ppo_params):
 
 
 
-def learn_env_model(memory, est, verbose=False):
+def learn_env_model(memory: Memory, est: BaseEstimator, verbose=False):
     # Convert episodes to training set (x=[x_t, u_t] -> y=[x_t+1])
     x, y = [], []
     for i, (d, s, a) in enumerate(zip(memory.is_terminals, memory.states, memory.actions)):
@@ -190,40 +191,81 @@ def learn_env_model(memory, est, verbose=False):
 
 
 
-def distance(memory, policy0, policy1, kind='jensenshannon', **ppo_params):
-    Policy = ppo_params['policy'] # get the policy class
-    policy = Policy(ppo_params['state_dim'], ppo_params['action_dim'],
-                    ppo_params['n_latent_var']).to(DEVICE)
-    # pylint: disable=not-callable
+def distance(memory: Memory, policy, params1, params2, metric='jensenshannon'):
+    """Similarity between two policies based on probabilities of same experience"""
+    og_params = policy.state_dict()
     s = torch.tensor(memory.states).float().to(DEVICE)
     a = torch.tensor(memory.actions).float().to(DEVICE)
 
-    policy.load_state_dict(policy0)
+    policy.load_state_dict(params1)
     logprobs0, _, _ = policy.evaluate(s, a)
     p0 = torch.exp(logprobs0).detach()
 
-    policy.load_state_dict(policy1)
+    policy.load_state_dict(params2)
     logprobs1, _, _ = policy.evaluate(s, a)
     p1 = torch.exp(logprobs1).detach()
 
-    if kind=='kldivergence':
-        kl_0_1 = torch.sum(p0 * torch.log(p0 / p1)).item()
-        kl_1_0 = torch.sum(p1 * torch.log(p1 / p0)).item()
-        return kl_0_1, kl_1_0
-    elif kind == 'jensenshannon':
+    if metric=='jensenshannon':
         dist = jensenshannon(p0.cpu(), p1.cpu())
-        return dist, dist
+    elif metric == 'euclidean':
+        dist = euclidean(p0.cpu(), p1.cpu())
+    elif metric == 'l1':
+        dist = np.linalg.norm(p0.cpu() - p1.cpu(), ord=1)
+    elif metric == 'cosine':
+        dist = cosine(p0.cpu(), p1.cpu())
+    policy.load_state_dict(og_params)
+    return dist, dist
 
 
 
-def prune_library(library, library_size, memory, **ppo_params):
+def prune_library(library, agent, memory, max_library_size=10, seed=None):
+    """Rank policies with most divergent behavior from other policies"""
+    random = np.random.RandomState(seed) if seed is not None else seed
+    policy = agent.policy
     divmat = np.zeros((len(library), len(library)))
     for p1, p2 in combinations(range(len(library)), 2):
-        divmat[p1, p2], divmat[p2, p1] = distance(memory, library[p1], library[p2], **ppo_params)
-    size = min(library_size, len(library))  # size of divergence matrix
-    keep = np.argsort(np.sum(divmat, axis=1))[::-1][:size]
+        divmat[p1, p2], divmat[p2, p1] = distance(memory, policy, library[p1], library[p2])
+    # https://sklearn.org/modules/generated/sklearn.cluster.SpectralClustering.html#sklearn.cluster.SpectralClustering
+    affmat = np.exp(- divmat**2 / 2)
+    size = min(max_library_size, len(library))  # size of divergence matrix
+    if size < len(library):
+        clusterer = cluster.SpectralClustering(size, affinity='precomputed')
+        clusters = clusterer.fit_predict(affmat)
+        keep, clusters_added = [], []
+        for i, c in enumerate(clusters):
+            if c not in clusters_added:
+                keep.append(i)
+                clusters_added.append(c)
+        if len(keep) < size:
+            left = [i for r in range(len(library)) if i not in keep]
+            keep.extend(random.choice(left, size - len(keep)))
+    else:
+        keep = np.argsort(np.sum(divmat, axis=1))[::-1][:size]
     idx = np.ix_(keep, keep)  # generate indices to select range of axes
-    return [library[k] for k in keep], divmat, idx
+    return [library[k] for k in keep], divmat[idx], keep
+
+
+
+def rank_library(library, agent, memory):
+    """Sort policies by expected returns on a memory of experiences (descending)"""
+    og_params = agent.policy.state_dict()
+    returns = torch.tensor(memory.returns).float().to(DEVICE).detach()
+    truncate = len(returns)
+    # returns = (returns - returns.mean()) / (returns.std() + 1e-5)
+    states = torch.tensor(memory.states[:truncate]).float().to(DEVICE).detach()
+    actions = torch.tensor(memory.actions[:truncate]).float().to(DEVICE).detach()
+    vals = []
+    for params in library:
+        agent.policy.load_state_dict(params)
+        # TODO: logp is p of taking action from state,
+        # shouldnt we multiply logp of (state-1, action-1) with the value
+        # of state to get the weighed value of each state in sequence times
+        # the likelihood of that state?
+        logp, _, _ = agent.policy.evaluate(states, actions)
+        p = torch.exp(logp)
+        vals.append(torch.sum(p * returns).item())
+    agent.policy.load_state_dict(og_params)
+    return np.argsort(vals)[::-1], np.asarray(vals)
 
 
 
@@ -245,6 +287,5 @@ def plot_adaption(rs, stds, labels, faults=(0,), avg_window=10):
     # plt.text(-30, 74, 'Fault', c='r', rotation=90)
     plt.xlabel('Episodes')
     plt.ylabel('Rewards')
-    plt.title('Average episodic rewards after abrupt fault')
     plt.grid(True, 'both')
     plt.legend()

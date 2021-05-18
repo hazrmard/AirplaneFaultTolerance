@@ -13,6 +13,7 @@
 	"settings": {
 		"terminal.integrated.env.linux": {
 			"PYTHONPATH": "${workspaceFolder}/../pyStateSpace:${workspaceFolder}/../pyTorchBridge"
-		}
+		},
+		"jupyter.jupyterServerType": "local"
 	}
 }

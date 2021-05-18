@@ -5,6 +5,8 @@ from typing import List, Tuple, Any, Union, Dict, Iterable
 from collections import OrderedDict
 import multiprocessing as mp
 from copy import deepcopy
+import pickle
+import pathlib
 
 import gym
 import numpy as np
@@ -92,7 +94,7 @@ def cache_to_training_set(x_cache: List[np.ndarray], u_cache: List[np.ndarray], 
 
 
 def cache_to_episodes(cache: List[np.ndarray], d_cache: List[np.ndarray],
-    mode: str='closed') -> List[np.ndarray]:
+    mode: str='closed', discard_trailing: bool=True) -> List[np.ndarray]:
     """
     Converts a cache of rewards to an array of total rewards per episode.
 
@@ -107,6 +109,9 @@ def cache_to_episodes(cache: List[np.ndarray], d_cache: List[np.ndarray],
         If "open", then values at indices where d_cache is True will be included
         at the end of the previous episode. If "closed", those values will be
         included at the start of the next episode.
+    discard_trailing: bool
+        Whether to discard elements at the end of cache corresponding to an unfinished
+        episode.
 
     Returns
     -------
@@ -115,7 +120,15 @@ def cache_to_episodes(cache: List[np.ndarray], d_cache: List[np.ndarray],
     """
     cache = np.concatenate(cache, axis=0)
     d_cache = np.concatenate(d_cache, axis=0)
+    if True in d_cache and discard_trailing:
+        idx_from_end = np.where(d_cache==True)[0][-1]
+        if idx_from_end > 0:
+            cache = cache[:-idx_from_end]
+            d_cache = d_cache[:-idx_from_end]
+    
     terminal_idx = np.nonzero(d_cache)[0]
+    if len(terminal_idx) == 0: # no episode end
+        return [cache]
     if terminal_idx[-1] != len(cache) - 1:      # Include trailing end of cache
         terminal_idx = np.hstack((terminal_idx, (len(cache) - 1,)))
     if mode == 'open':                         # Include values at indices where
@@ -178,6 +191,35 @@ def rewards_from_actions(env: gym.Env, u: List[Any]) -> float:
         rewards += r
         if done: env.reset()
     return rewards
+
+
+
+
+def homogenous_array(arrays: List[Iterable], start_align=True) -> np.ndarray:
+    """
+    Convert a list of 1D arrays of multiple lengths into a 2D array padded with
+    zeros.
+
+    Parameters
+    ----------
+    arrays : List[Iterable]
+        List of 1D iterables.
+    start_align : bool, optional
+        Whether to align all arrays' start positions, by default True
+
+    Returns
+    -------
+    np.ndarray
+        A 2D array of size len(arrays) x max array length
+    """
+    maxlen = max(map(len, arrays))
+    res = np.zeros((len(arrays), maxlen))
+    for i, arr in enumerate(arrays):
+        if start_align:
+            res[i, :len(arr)] = arr
+        else:
+            res[i, -len(arr):] = arr
+    return res
 
 
 
@@ -300,6 +342,31 @@ def sanitize_filename(fname: str) -> str:
     return fname
 
 
+
+def read_pickle(fname: Union[str, pathlib.Path]):
+    if isinstance(fname, pathlib.Path):
+        if not fname.name.endswith('.pickle'):
+            fname = fname.parent / (fname.name + '.pickle')
+    elif not fname.endswith('.pickle'):
+        fname += '.pickle'
+    with open(fname, 'rb') as f:
+        res = pickle.load(f)
+    return res
+
+
+
+def write_pickle(data, fname: Union[str, pathlib.Path]):
+    if isinstance(fname, pathlib.Path):
+        if not fname.name.endswith('.pickle'):
+            fname = fname.parent / (fname.name + '.pickle')
+    elif not fname.endswith('.pickle'):
+        fname += '.pickle'
+    with open(fname, 'wb') as f:
+        res = pickle.dump(data, f)
+
+
+def rollmean(arr, window) -> np.ndarray:
+    return np.convolve(np.ones(window), arr, 'valid') / window
 
 class higher_dummy_context:
 
