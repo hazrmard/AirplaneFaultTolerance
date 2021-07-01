@@ -7,7 +7,6 @@ from sklearn.base import BaseEstimator
 
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from higher import innerloop_ctx
 import numpy as np
 from tqdm.auto import tqdm, trange
 import matplotlib.pyplot as plt
@@ -15,8 +14,8 @@ from sklearn import cluster
 from sklearn.neural_network import MLPRegressor
 from scipy.spatial.distance import jensenshannon, cosine, euclidean
 
-from utils import copy_mlp_regressor, copy_tensor, higher_dummy_context, get_gradients
-from ppo import PPO, Memory, DEVICE, returns
+from utils import copy_mlp_regressor, copy_tensor, get_gradients
+from ppo import PPO, Memory, DEVICE
 
 
 
@@ -257,13 +256,10 @@ def rank_library(library, agent, memory):
     vals = []
     for params in library:
         agent.policy.load_state_dict(params)
-        # TODO: logp is p of taking action from state,
-        # shouldnt we multiply logp of (state-1, action-1) with the value
-        # of state to get the weighed value of each state in sequence times
-        # the likelihood of that state?
         logp, _, _ = agent.policy.evaluate(states, actions)
         p = torch.exp(logp)
-        vals.append(torch.sum(p * returns).item())
+        # multiply probability of action reaching that state with value of state
+        vals.append(torch.sum(p[:-1] * returns[1:]).item())
     agent.policy.load_state_dict(og_params)
     return np.argsort(vals)[::-1], np.asarray(vals)
 

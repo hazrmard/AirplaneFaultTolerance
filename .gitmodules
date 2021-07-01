@@ -1,0 +1,6 @@
+[submodule "commonml"]
+	path = commonml
+	url = git@git.isis.vanderbilt.edu:ahmedi/commonml.git
+[submodule "systems/octorotor"]
+	path = systems/octorotor
+	url = git@git.isis.vanderbilt.edu:ahmedi/gym-octorotor.git

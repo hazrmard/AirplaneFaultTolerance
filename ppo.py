@@ -14,8 +14,6 @@ import gym
 import numpy as np
 from tqdm.auto import trange
 
-from utils import higher_dummy_context
-
 # pylint: disable=no-member
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
